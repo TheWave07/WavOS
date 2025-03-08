@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "gdtdesc.h": "c",
+        "isr.h": "c",
+        "portio.h": "c",
+        "pci.h": "c",
+        "types.h": "c",
+        "multitasking.h": "c",
+        "screen.h": "c",
+        "ata.h": "c",
+        "memorymanagement.h": "c"
+    }
+}
