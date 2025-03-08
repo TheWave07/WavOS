@@ -52,7 +52,21 @@ typedef struct {
     uint32_t size;
 } __attribute__((packed)) directory_entry_fat32;
 
+typedef struct {
+    uint32_t fat_start;
+    uint32_t fat_size;
 
-void readBPB(ata_drive hd, uint32_t partitionOffset);
+    uint32_t data_start;
+} fat_descriptor;
 
+typedef struct {
+    bios_parameter_block32 bpb;
+    fat_descriptor fatDesc;
+} partition_descr;
+
+partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset);
+void read_dir(ata_drive hd, uint32_t firstCluster, partition_descr partDesc);
+void tree(ata_drive hd, partition_descr partDesc);
+void create_file(ata_drive hd, char* name, char* ext, partition_descr partDesc);
+void write_to_file(ata_drive hd, const char *name, const char *ext, partition_descr partDesc, const char *data, uint32_t size);
 #endif

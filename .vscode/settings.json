@@ -8,6 +8,9 @@
         "multitasking.h": "c",
         "screen.h": "c",
         "ata.h": "c",
-        "memorymanagement.h": "c"
+        "memorymanagement.h": "c",
+        "fat.h": "c",
+        "tools.h": "c",
+        "str.h": "c"
     }
 }

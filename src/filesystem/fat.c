@@ -1,77 +1,249 @@
 #include <filesystem/fat.h>
+#include <common/str.h>
 #include <io/screen.h>
+#define SECTOR_SIZE 512
+#define SECTOR_TO_BYTE SECTOR_SIZE / 4
 
 
 
-void readBPB(ata_drive hd, uint32_t partitionOffset) {
+/// @brief returns the val of the specified entry in FAT
+/// @param hd
+/// @param ent_idx 
+/// @return the value
+uint32_t read_fat_entry(ata_drive hd, uint32_t ent_idx, partition_descr partDesc) {
+    uint8_t fatBuffer[512];
 
-    bios_parameter_block32 bpb;
+    // gets the next cluster belonging to the file
+    uint32_t entrySector = ent_idx / SECTOR_TO_BYTE;
+    read28(hd, partDesc.fatDesc.fat_start + entrySector, fatBuffer, 512);
 
-    read28(hd, partitionOffset, (uint8_t*)&bpb, sizeof(bios_parameter_block32));
+    uint32_t entryOffInSect = ent_idx % (SECTOR_TO_BYTE);
+    return ((uint32_t*)fatBuffer)[entryOffInSect] & 0x0FFFFFFF;
+}
+
+/// @brief parses partition bpb
+/// @param hd 
+/// @param partitionOffset 
+/// @return a partiton descriptor
+partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset) {
+    partition_descr partDesc;
+    read28(hd, partitionOffset, (uint8_t*)&partDesc.bpb, sizeof(bios_parameter_block32));
 
     terminal_write_string("sectors per cluster: ");
-    terminal_write_int(bpb.sectorPerCluster, 16);
+    terminal_write_int(partDesc.bpb.sectorPerCluster, 16);
     terminal_write_string("\n");
 
-    uint32_t fatStart = partitionOffset + bpb.reservedSectors;
-    uint32_t fatSize = bpb.tableSize;
+    partDesc.fatDesc.fat_start = partitionOffset + partDesc.bpb.reservedSectors;
+    partDesc.fatDesc.fat_size = partDesc.bpb.tableSize;
 
-    uint32_t dataStart = fatStart + fatSize * bpb.fatCopies;
-    uint32_t rootStart = dataStart + bpb.sectorPerCluster * (bpb.rootCluster - 2);
+    partDesc.fatDesc.data_start = partDesc.fatDesc.fat_start + partDesc.fatDesc.fat_size * partDesc.bpb.fatCopies;
+
+    return partDesc;
+}
+
+void tree(ata_drive hd, partition_descr partDesc) {
+    read_dir(hd, partDesc.bpb.rootCluster, partDesc); 
+}
+
+/// @brief reads a dir and prints its contents
+/// @param hd
+/// @param firstCluster first cluster of the dir
+void read_dir(ata_drive hd, uint32_t firstCluster, partition_descr partDesc) {
 
     directory_entry_fat32 dirent[16];
-    read28(hd, rootStart, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
 
-    for (int i = 0; i < 16; i++)
-    {
-        if(dirent[i].name[0] == 0x00) // unused dir ent
-            break;
-        
-        if((dirent[i].attributes & 0x0F) == 0x0F) // long name dir entry
-            continue;
-        
-        char *foo = "        \n";
-        for (int j = 0; j < 8; j++)
-        {
-            foo[j] = dirent[i].name[j];
-        }
-        terminal_write_string(foo);
+    uint32_t nextDirCluster = firstCluster;
+    bool moreEnt = 1;
 
-        if((dirent[i].attributes & 0x10) == 0x10) // dir
-            continue;
-        
-        uint32_t firstfileCluster = ((uint32_t)dirent[i].firstClusterHi) << 16
-                             | ((uint32_t)dirent[i].firstClusterLo);
-
-        int32_t SIZE = dirent[i].size;
-        int32_t nextFileCluster = firstfileCluster;
-        uint8_t buffer[513];
-        uint8_t fatBuffer[512];
-        while (SIZE > 0)
-        {
-            uint32_t fileSector = dataStart + bpb.sectorPerCluster * (nextFileCluster - 2);
-            int sectorOffset = 0;
-            
-            // reads all sectors belonging to file from curr file cluster
-            for (; SIZE > 0; SIZE -= 512)
-            {
-                read28(hd, fileSector + sectorOffset, buffer, 512);
-                buffer[SIZE > 512 ? 512 : SIZE] = '\0';
-
-                if(++sectorOffset > bpb.sectorPerCluster)
+    while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
+        int dirSectorOffset = 0;
+        uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+        do {
+            read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            for (int i = 0; i < 16; i++) {
+                if(dirent[i].name[0] == 0x00) { // end of dir entries
+                    moreEnt = 0;
                     break;
+                }
+                if(dirent[i].name[0]  == 0xE5) // skip, unused entry
+                    continue;
 
-                terminal_write_string((char*)buffer);
+                if((dirent[i].attributes & 0x0F) == 0x0F) // long name dir entry
+                    continue;
+                
+                char *foo = "        \n";
+                for (int j = 0; j < 8; j++)
+                {
+                    foo[j] = dirent[i].name[j];
+                }
+                if(strlen(foo) != 9) {
+                    foo[strlen(foo) + 1] = '\0';
+                    foo[strlen(foo)] = '\n';
+                }
+                terminal_write_string(foo);
+
+                uint32_t firstEntCluster = ((uint32_t)dirent[i].firstClusterHi) << 16
+                                          | ((uint32_t)dirent[i].firstClusterLo);
+                if((dirent[i].attributes & 0x10) == 0x10) { // dir
+                    if (dirent[i].name[0] == '.')
+                        continue;
+                    read_dir(hd, firstEntCluster, partDesc);
+                    continue;
+                }
+
+                int32_t SIZE = dirent[i].size;
+                uint32_t nextFileCluster = firstEntCluster;
+                uint8_t buffer[513];
+                //follows cluster chain
+                while (nextFileCluster < 0x0FFFFFF8)
+                {
+                    uint32_t fileSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextFileCluster - 2);
+                    int sectorOffset = 0;
+                    
+                    // reads all sectors belonging to file from curr file cluster
+                    for (; SIZE > 0; SIZE -= 512)
+                    {
+                        read28(hd, fileSector + sectorOffset, buffer, 512);
+                        buffer[SIZE > 512 ? 512 : SIZE] = '\0';
+
+                        if(++sectorOffset > partDesc.bpb.sectorPerCluster)
+                            break;
+
+                        terminal_write_string((char*)buffer);
+                    }
+
+                    nextFileCluster = read_fat_entry(hd, nextFileCluster, partDesc);
+                    
+                }
             }
-
-            // gets next cluster belonging to the file
-            uint32_t fatSectorCurrCluster = nextFileCluster / (512/sizeof(uint32_t));
-            read28(hd, fatStart + fatSectorCurrCluster, fatBuffer, 512);
-
-            uint32_t currClusterOffInFATSector = nextFileCluster % (512/sizeof(uint32_t));
-            nextFileCluster = ((uint32_t*)fatBuffer)[currClusterOffInFATSector] & 0x0FFFFFFF;
-            
-        }
+        } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+        // gets next cluster belonging to the dir
+        nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
     }
+}
+
+// returns the first empty entry in the FAT
+uint32_t find_empty_Cluster(ata_drive hd, partition_descr partDesc) {
+    for (uint32_t i = 2; i < partDesc.fatDesc.fat_size / 4; i++)
+    {
+        if(read_fat_entry(hd, i, partDesc) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/// @brief creates file in root directory
+/// @param hd 
+/// @param name 
+/// @param ext 
+void create_file(ata_drive hd, char* name, char* ext, partition_descr partDesc) {
     
+    
+    directory_entry_fat32 dirent[16];
+
+    uint32_t nextDirCluster = partDesc.bpb.rootCluster;
+    bool moreEnt = 1;
+
+    while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
+        int dirSectorOffset = 0;
+        uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+        do {
+            read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            int emptyEntIdx = -1;
+            for (int i = 0; i < 16; i++) {
+                if((dirent[i].name[0] == 0x00) || (dirent[i].name[0]  == 0xE5)) { // end of dir entries
+                    emptyEntIdx = i;
+                    break;
+                }
+            }
+            if(emptyEntIdx == -1)
+                continue;
+            // creates dir entry for the file
+            for (int j = 0; (j < 8) && (name[j] != '\0'); j++)
+                dirent[emptyEntIdx].name[j] = name[j];
+            
+            for (int j = 0; j < 3; j++) {
+                dirent[emptyEntIdx].ext[j] = ext[j];
+            }
+            dirent[emptyEntIdx].size = 0;
+            dirent[emptyEntIdx].attributes = 0x0;
+            uint32_t firstCluster = find_empty_Cluster(hd, partDesc);
+            dirent[emptyEntIdx].firstClusterHi = (uint16_t )(firstCluster >> 16);
+            dirent[emptyEntIdx].firstClusterLo = (uint16_t)(firstCluster & 0xffff);
+            // updates dir
+            write28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            flush(hd);
+        } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+        // gets next cluster belonging to the dir
+        nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
+    }
+}
+
+/// @brief writes to file in root dir
+/// @param hd 
+/// @param name name of file
+/// @param ext extension of file
+/// @param partDesc partition in which the file is
+/// @param data 
+/// @param size 
+void write_to_file(ata_drive hd, const char *name, const char *ext, partition_descr partDesc, const char *data, uint32_t size) {
+    directory_entry_fat32 dirent[16];
+
+    uint32_t nextDirCluster = partDesc.bpb.rootCluster;
+    bool moreEnt = 1;
+
+    while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
+        int dirSectorOffset = 0;
+        uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+        do {
+            read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            int fileEntIdx = -1;
+            for (int i = 0; i < 16; i++) {
+                if(dirent[i].name[0] == 0x00) { // end of dir entries
+                    moreEnt = 0;
+                    break;
+                }
+                if(dirent[i].name[0]  == 0xE5) // skip, unused entry
+                    continue;
+
+                if((dirent[i].attributes & 0x0F) == 0x0F) // long name dir entry
+                    continue;
+
+                char *fileName = "        ";
+                for (int j = 0; j < 8; j++)
+                {
+                    fileName[j] = dirent[i].name[j];
+                }
+                if(strcmp(fileName, name))
+                    continue;
+                char *fileExt = "   ";
+                for (int j = 0; j < 3; j++)
+                {
+                    fileExt[j] = dirent[i].ext[j];
+                }
+                if(strcmp(fileExt, ext))
+                    continue;
+                fileEntIdx = i;
+                break;
+            }
+            if(fileEntIdx == -1)
+                continue;
+            // gets first cluster of file
+            uint32_t firstFileCluster = ((uint32_t)dirent[fileEntIdx].firstClusterHi) >> 16
+                                     | ((uint32_t)dirent[fileEntIdx].firstClusterLo);
+            // updates the entry size
+            dirent[fileEntIdx].size = size;
+
+            // writes the data
+            uint32_t fileSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (firstFileCluster - 2);
+            
+            write28(hd, fileSector, (uint8_t*) data, size);
+            write28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            flush(hd);
+
+            break;
+        } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+        // gets next cluster belonging to the dir
+        nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
+    }
 }

@@ -7,6 +7,7 @@
 #include <memorymanagement.h>
 #include <drivers/ata.h>
 #include <filesystem/msdospart.h>
+#include <filesystem/fat.h>
 #include <multitasking.h>
 void taskA()
 {
@@ -100,10 +101,12 @@ int kmain(void *mbd, unsigned int magic){
     ata_drive ataSlave = create_ata(false, 0x1F0);
     identify(ataSlave);
     
-    readPartitions(ataSlave);
-    //write28(ataMaster, 0, (uint8_t*)"I Am Writing to a HDD", 22);
-    //flush(ataMaster);
-    //read28(ataSlave, 0, 22);
+    partition_descr *part_descriptors = read_partitions(ataSlave);
+
+    tree(ataSlave, part_descriptors[0]);
+    //create_file(ataSlave, "file3", "txt", part_descriptors[0]);
+    //write_to_file(ataSlave, "file3", "txt", part_descriptors[0], "I Am writing To File 3", 23);
+    //tree(ataSlave, part_descriptors[0]);
     while(1) {
         key_packet p = kb_fetch();
         if(p.printable)

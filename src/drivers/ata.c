@@ -145,11 +145,6 @@ void write28(ata_drive drive, uint32_t sectorNum, uint8_t *data, uint32_t count)
             wdata |= ((uint16_t)data[i+1]) << 8;
 
         outw(drive.dataPort, wdata);
-        
-        char *text = "  \0";
-        text[0] = wdata & 0xFF;
-        text[1] = (wdata >> 8) & 0xFF;
-        terminal_write_string(text);
     }
 
     // reads the rest of the sector

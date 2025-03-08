@@ -1,6 +1,7 @@
 #ifndef __WAVOS__FILESYSTEM__MSDOSPART_H
 #define __WAVOS__FILESYSTEM__MSDOSPART_H
 #include <common/types.h>
+#include <filesystem/fat.h>
 #include <drivers/ata.h>
 typedef struct {
     uint8_t bootable;
@@ -30,5 +31,5 @@ typedef struct {
 
 } __attribute__((packed)) master_boot_record;
 
-void readPartitions(ata_drive drive);
+partition_descr* read_partitions(ata_drive drive);
 #endif

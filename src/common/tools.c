@@ -7,6 +7,7 @@ void memset(unsigned char *dest, unsigned char val, unsigned int len)
     for ( ; len != 0; len--) *temp++ = val;
 }
 
+
 char * itoa( int value, char * str, int base )
 {
 	char * rc;
