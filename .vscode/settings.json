@@ -11,6 +11,7 @@
         "memorymanagement.h": "c",
         "fat.h": "c",
         "tools.h": "c",
-        "str.h": "c"
+        "str.h": "c",
+        "msdospart.h": "c"
     }
 }

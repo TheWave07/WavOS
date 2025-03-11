@@ -61,7 +61,11 @@ typedef struct {
 
 typedef struct {
     bios_parameter_block32 bpb;
+
     fat_descriptor fatDesc;
+
+    uint32_t freeClusters;
+
 } partition_descr;
 
 partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset);

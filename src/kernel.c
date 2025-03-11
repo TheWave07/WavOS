@@ -1,4 +1,5 @@
 #include <io/screen.h>
+#include <common/tools.h>
 #include <gdtdesc.h>
 #include <hardwarecomms/idtdesc.h>
 #include <hardwarecomms/portio.h>
@@ -103,10 +104,13 @@ int kmain(void *mbd, unsigned int magic){
     
     partition_descr *part_descriptors = read_partitions(ataSlave);
 
-    tree(ataSlave, part_descriptors[0]);
+    char lotsOWords[7002];
+    memset(lotsOWords, 'B', 7000);
+    lotsOWords[7000] = 'C';
+    lotsOWords[7001] = '\0';
     //create_file(ataSlave, "file3", "txt", part_descriptors[0]);
-    //write_to_file(ataSlave, "file3", "txt", part_descriptors[0], "I Am writing To File 3", 23);
-    //tree(ataSlave, part_descriptors[0]);
+    //write_to_file(ataSlave, "file3", "txt", part_descriptors[0], lotsOWords, 7002);
+    tree(ataSlave, part_descriptors[0]);
     while(1) {
         key_packet p = kb_fetch();
         if(p.printable)
