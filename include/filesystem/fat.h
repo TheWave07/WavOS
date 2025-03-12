@@ -53,6 +53,17 @@ typedef struct {
 } __attribute__((packed)) directory_entry_fat32;
 
 typedef struct {
+    uint8_t order; //6 bit indicates last entry
+    uint16_t chars1[5];
+    uint8_t attributes;
+    uint8_t longEntryType;
+    uint8_t reserved;
+    uint16_t chars2[6];
+    uint16_t zero;
+    uint16_t chars3[2];
+} __attribute__((packed)) LFN_entry_fat32;
+
+typedef struct {
     uint32_t fat_start;
     uint32_t fat_size;
 
@@ -69,8 +80,9 @@ typedef struct {
 } partition_descr;
 
 partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset);
-void read_dir(ata_drive hd, uint32_t firstCluster, partition_descr partDesc);
+void read_dir(ata_drive hd, const char* path, partition_descr partDesc);
 void tree(ata_drive hd, partition_descr partDesc);
-void create_file(ata_drive hd, char* name, char* ext, partition_descr partDesc);
-void write_to_file(ata_drive hd, const char *name, const char *ext, partition_descr partDesc, const char *data, uint32_t size);
+void create_file(ata_drive hd, char* path, char* name, char* ext, partition_descr partDesc);
+void read_file(ata_drive hd, const char* dirPath, const char* fileName, partition_descr partDesc);
+void write_to_file(ata_drive hd, const char* dirPath,const char *fileName, const char *data, uint32_t size, partition_descr partDesc);
 #endif

@@ -104,13 +104,15 @@ int kmain(void *mbd, unsigned int magic){
     
     partition_descr *part_descriptors = read_partitions(ataSlave);
 
-    char lotsOWords[7002];
+    /*char lotsOWords[7002];
     memset(lotsOWords, 'B', 7000);
     lotsOWords[7000] = 'C';
     lotsOWords[7001] = '\0';
-    //create_file(ataSlave, "file3", "txt", part_descriptors[0]);
+    write_to_file(ataSlave, "dir1", "file1.txt", lotsOWords, 7002, part_descriptors[0]);*/
+    read_file(ataSlave, "dir1", "file1.txt", part_descriptors[0]);
+    //create_file(ataSlave, "/DIR1/" , "file2", "txt", part_descriptors[0]);
+    //tree(ataSlave, part_descriptors[0]);
     //write_to_file(ataSlave, "file3", "txt", part_descriptors[0], lotsOWords, 7002);
-    tree(ataSlave, part_descriptors[0]);
     while(1) {
         key_packet p = kb_fetch();
         if(p.printable)
