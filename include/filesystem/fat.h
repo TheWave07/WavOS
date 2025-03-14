@@ -36,6 +36,17 @@ typedef struct {
     uint8_t fatTypeLabel[8];
 } __attribute__((packed)) bios_parameter_block32;
 
+
+typedef struct {
+    uint32_t leadSig;
+    uint8_t reserved0[480];
+    uint32_t secSig;
+    uint32_t freeClusterCount;
+    uint32_t freeClusterHint;
+    uint8_t reserved1[12];
+    uint32_t trailSig;
+} __attribute__((packed)) FSInfo_block;
+
 typedef struct {
     uint8_t name[8];
     uint8_t ext[3];
@@ -57,7 +68,7 @@ typedef struct {
     uint16_t chars1[5];
     uint8_t attributes;
     uint8_t longEntryType;
-    uint8_t reserved;
+    uint8_t checksum;
     uint16_t chars2[6];
     uint16_t zero;
     uint16_t chars3[2];
@@ -72,17 +83,19 @@ typedef struct {
 
 typedef struct {
     bios_parameter_block32 bpb;
+    
+    FSInfo_block FSInfo;
 
     fat_descriptor fatDesc;
-
-    uint32_t freeClusters;
-
 } partition_descr;
 
 partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset);
-void read_dir(ata_drive hd, const char* path, partition_descr partDesc);
-void tree(ata_drive hd, partition_descr partDesc);
-void create_file(ata_drive hd, char* path, char* name, char* ext, partition_descr partDesc);
-void read_file(ata_drive hd, const char* dirPath, const char* fileName, partition_descr partDesc);
-void write_to_file(ata_drive hd, const char* dirPath,const char *fileName, const char *data, uint32_t size, partition_descr partDesc);
+void read_dir(ata_drive hd, const char* path, partition_descr *partDesc);
+void tree(ata_drive hd, partition_descr *partDesc);
+void create_file(ata_drive hd, char* path, char* fileName, partition_descr *partDesc);
+void delete_file(ata_drive hd, char* dirPath, char* fileName, partition_descr *partDesc);
+void create_dir(ata_drive hd, char* path, char* dirName, partition_descr *partDesc);
+void delete_dir(ata_drive hd, char* dirPath, char* dirName, partition_descr *partDesc);
+void read_file(ata_drive hd, const char* dirPath, const char* fileName, partition_descr *partDesc);
+void write_to_file(ata_drive hd, const char* dirPath,const char *fileName, const char *data, uint32_t size, partition_descr *partDesc);
 #endif

@@ -24,8 +24,6 @@ partition_descr* read_partitions(ata_drive drive) {
             continue;
         }
         descriptors[i] = read_BPB(drive, mbr.primaryPartition[i].start_lba);
-
-        descriptors[i].freeClusters =  (descriptors[i].fatDesc.fat_size / 4) - 2;
     }
     terminal_write_string("\n");
 

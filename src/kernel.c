@@ -107,12 +107,17 @@ int kmain(void *mbd, unsigned int magic){
     /*char lotsOWords[7002];
     memset(lotsOWords, 'B', 7000);
     lotsOWords[7000] = 'C';
-    lotsOWords[7001] = '\0';
-    write_to_file(ataSlave, "dir1", "file1.txt", lotsOWords, 7002, part_descriptors[0]);*/
-    read_file(ataSlave, "dir1", "file1.txt", part_descriptors[0]);
-    //create_file(ataSlave, "/DIR1/" , "file2", "txt", part_descriptors[0]);
-    //tree(ataSlave, part_descriptors[0]);
-    //write_to_file(ataSlave, "file3", "txt", part_descriptors[0], lotsOWords, 7002);
+    lotsOWords[7001] = '\0';*/
+    //write_to_file(ataSlave, "dir1", "file1.txt", "this is file1 part1 dir1", 25, part_descriptors);
+    //read_file(ataSlave, "dir1/dir2", "file1.txt", part_descriptors);
+    //create_dir(ataSlave, "dir1/dir2", "dir3", part_descriptors);
+    //create_file(ataSlave, "dir1/dir2/dir3", "file1.txt", part_descriptors);
+    //write_to_file(ataSlave, "dir1/dir2/dir3", "file1.txt", "this is file1 part1 dir3", 25, part_descriptors);
+    //read_file(ataSlave, "dir1/dir2/dir3", "file1.txt", part_descriptors);
+    //delete_file(ataSlave, "dir1/dir2/dir3" , "file1.txt", part_descriptors);
+    //delete_dir(ataSlave, "dir1/dir2", "dir3", part_descriptors);
+    //tree(ataSlave, part_descriptors);
+    //write_to_file(ataSlave, "file3", "txt", part_descriptors, lotsOWords, 7002);
     while(1) {
         key_packet p = kb_fetch();
         if(p.printable)

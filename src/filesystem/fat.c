@@ -1,23 +1,46 @@
 #include <filesystem/fat.h>
 #include <memorymanagement.h>
 #include <common/str.h>
+#include <common/tools.h>
 #include <io/screen.h>
 #define SECTOR_SIZE 512
 #define SECTOR_TO_BYTE SECTOR_SIZE / 4
+#define SFN_ALLOWED "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()-@^_`{}~"
+
+uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr *partDesc);
+bool is_file_in_dir(ata_drive hd, uint32_t dirFirstCluster, const char* fileName, partition_descr *partDesc);
 
 
-uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr partDesc);
+/// @brief convets utf16 to utf8 ascii (assuming only utf8 compatible chars are used)
+/// @param utf16 the utf16 string
+/// @param ascii the buffer in which the utf8 string will be put
+/// @param length length of utf16 string
+void utf16_to_utf8(uint16_t *utf16, char *ascii, int length) {
+    for (int i = 0; i < length; i++) {
+        if (utf16[i] == 0xFFFF || utf16[i] == 0) break;
+        ascii[i] = (char)utf16[i];
+    }
+}
+
+/// @brief converts utf8 back into utf16
+/// @param utf8 the utf8 string
+/// @param utf16 output buffer for utf16 string
+void utf8_to_utf16(const char *utf8, uint16_t *utf16) {
+    while (*utf8) {
+        *utf16++ = (uint16_t)(*utf8++);
+    }
+}
 
 /// @brief returns the val of the specified entry in FAT
 /// @param hd
 /// @param ent_idx 
 /// @return the value
-uint32_t read_fat_entry(ata_drive hd, uint32_t ent_idx, partition_descr partDesc) {
+uint32_t read_fat_entry(ata_drive hd, uint32_t ent_idx, partition_descr *partDesc) {
     uint8_t fatBuffer[512];
 
     // gets the next cluster belonging to the file
     uint32_t entrySector = ent_idx / SECTOR_TO_BYTE;
-    read28(hd, partDesc.fatDesc.fat_start + entrySector, fatBuffer, 512);
+    read28(hd, partDesc->fatDesc.fat_start + entrySector, fatBuffer, 512);
 
     uint32_t entryOffInSect = ent_idx % (SECTOR_TO_BYTE);
     return ((uint32_t*)fatBuffer)[entryOffInSect] & 0x0FFFFFFF;
@@ -28,21 +51,21 @@ uint32_t read_fat_entry(ata_drive hd, uint32_t ent_idx, partition_descr partDesc
 /// @param ent_idx the index of the entry
 /// @param partDesc 
 /// @param val the new value
-void write_fat_entry(ata_drive hd, uint32_t ent_idx, partition_descr partDesc, uint32_t val) {
+void write_fat_entry(ata_drive hd, uint32_t ent_idx, partition_descr *partDesc, uint32_t val) {
     uint8_t fatBuffer[512];
 
     // gets the next cluster belonging to the file
     uint32_t entrySector = ent_idx / SECTOR_TO_BYTE;
-    read28(hd, partDesc.fatDesc.fat_start + entrySector, fatBuffer, 512);
+    read28(hd, partDesc->fatDesc.fat_start + entrySector, fatBuffer, 512);
 
     uint32_t entryOffInSect = ent_idx % (SECTOR_TO_BYTE);
     ((uint32_t*)fatBuffer)[entryOffInSect] = val;
-    write28(hd, partDesc.fatDesc.fat_start + entrySector, fatBuffer, 512);
+    write28(hd, partDesc->fatDesc.fat_start + entrySector, fatBuffer, 512);
     flush(hd);
 
-    read28(hd, partDesc.fatDesc.fat_start + partDesc.fatDesc.fat_size + entrySector, fatBuffer, 512);
+    read28(hd, partDesc->fatDesc.fat_start + partDesc->fatDesc.fat_size + entrySector, fatBuffer, 512);
     ((uint32_t*)fatBuffer)[entryOffInSect] = val;
-    write28(hd, partDesc.fatDesc.fat_start + partDesc.fatDesc.fat_size + entrySector, fatBuffer, 512);
+    write28(hd, partDesc->fatDesc.fat_start + partDesc->fatDesc.fat_size + entrySector, fatBuffer, 512);
     flush(hd);
 }
 
@@ -53,9 +76,13 @@ void write_fat_entry(ata_drive hd, uint32_t ent_idx, partition_descr partDesc, u
 partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset) {
     partition_descr partDesc;
     read28(hd, partitionOffset, (uint8_t*)&partDesc.bpb, sizeof(bios_parameter_block32));
-
+    read28(hd, partitionOffset + partDesc.bpb.fatInfo, (uint8_t*)&partDesc.FSInfo, sizeof(FSInfo_block));
     terminal_write_string("sectors per cluster: ");
     terminal_write_int(partDesc.bpb.sectorPerCluster, 16);
+    terminal_write_string("\n");
+
+    terminal_write_string("Free Clusters: ");
+    terminal_write_int(partDesc.FSInfo.freeClusterCount, 16);
     terminal_write_string("\n");
 
     partDesc.fatDesc.fat_start = partitionOffset + partDesc.bpb.reservedSectors;
@@ -66,25 +93,71 @@ partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset) {
     return partDesc;
 }
 
-// returns the first empty entry in the FAT
-uint32_t find_empty_Cluster(ata_drive hd, partition_descr partDesc) {
-    for (uint32_t i = 2; i < partDesc.fatDesc.fat_size / 4; i++)
+/// @brief updates the FSInfo section
+/// @param hd 
+/// @param partDesc 
+void update_FSInfo(ata_drive hd, partition_descr *partDesc) {
+    write28(hd, partDesc->fatDesc.fat_start - partDesc->bpb.reservedSectors + partDesc->bpb.fatInfo, (uint8_t*)&partDesc->FSInfo, sizeof(FSInfo_block));
+    flush(hd);
+}
+
+/// @brief zeros the cluser's data
+/// @param hd 
+/// @param cluster the cluster index
+/// @param partDesc 
+void empty_out_cluster(ata_drive hd, uint32_t cluster, partition_descr *partDesc) {
+    uint32_t clusterFirstSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (cluster - 2);
+    // zeros all sectors belonging to the cluster
+    for (int sectorOffset = 0; sectorOffset < partDesc->bpb.sectorPerCluster; sectorOffset++)
+    {
+        uint8_t zero[512] = {0};
+        write28(hd,clusterFirstSector + sectorOffset, zero, 512);
+        flush(hd);
+    }
+}
+
+/// @brief findes an empty cluster in fat table
+/// @param hd 
+/// @param partDesc 
+/// @return if found returns its index, otherwise returns 0xFFFFFFFF
+uint32_t find_empty_Cluster(ata_drive hd, partition_descr *partDesc) {
+    for (uint32_t i = 2; i < partDesc->fatDesc.fat_size / 4; i++)
     {
         if(read_fat_entry(hd, i, partDesc) == 0)
             return i;
     }
-    return -1;
+    return 0xFFFFFFFF;
 }
 
+/// @brief finds the cluster chain length
+/// @param hd 
+/// @param firstCluster the first cluster
+/// @param partDesc 
+/// @return the length of the cluster chain
+uint32_t clusterChainLen(ata_drive hd, uint32_t firstCluster, partition_descr *partDesc) {
+    uint32_t clusterCount = 0;
+    uint32_t nextFileCluster = firstCluster;
+    //follows cluster chain
+    for (; nextFileCluster < 0x0FFFFFF8; clusterCount++ )
+    {
+        nextFileCluster = read_fat_entry(hd, nextFileCluster, partDesc);
+    }
 
-uint32_t* find_cluster_chain(ata_drive hd, partition_descr partDesc, uint32_t clusterAmount) {
-    if(clusterAmount > partDesc.freeClusters)
+    return clusterCount;
+}
+/// @brief finds a specific amount of free clusters
+/// @param hd 
+/// @param partDesc 
+/// @param clusterAmount the size needed
+/// @return pointer to an array of cluster indexs
+uint32_t* find_free_clusters(ata_drive hd, partition_descr *partDesc, uint32_t clusterAmount) {
+    if(clusterAmount > partDesc->FSInfo.freeClusterCount)
         return NULL;
     uint32_t* clustersIdxs = (uint32_t*) malloc(clusterAmount * sizeof(uint32_t));
     if(!clustersIdxs)
         return NULL;
     uint32_t currClusterIdx = 0;
-    for (uint32_t i = 2; (i < partDesc.fatDesc.fat_size / 4) && (currClusterIdx < clusterAmount); i++)
+    for (uint32_t i = 2; (i < partDesc->fatDesc.fat_size / 4) && (currClusterIdx < clusterAmount); i++)
     {
         if(read_fat_entry(hd, i, partDesc) == 0)
             clustersIdxs[currClusterIdx++]  = i;
@@ -92,29 +165,71 @@ uint32_t* find_cluster_chain(ata_drive hd, partition_descr partDesc, uint32_t cl
     return clustersIdxs;
 }
 
+/// @brief finds the cluster chain starting in a certain cluster
+/// @param hd 
+/// @param partDesc 
+/// @param firstCluster the first cluster of the chain
+/// @param clusterAmount the amount of clusters in the chain
+/// @return an array containing the indexes of the clusters in the chain, NULL if no chain was found
+uint32_t* find_cluster_chain(ata_drive hd, partition_descr *partDesc, uint32_t firstCluster, uint32_t clusterAmount) {
+
+    if(firstCluster == 0)
+        return NULL;
+    
+    uint32_t* clustersIdxs = (uint32_t*) malloc(clusterAmount * sizeof(uint32_t));
+
+    uint32_t nextFileCluster = firstCluster;
+    //follows cluster chain
+    for(int i = 0; nextFileCluster < 0x0FFFFFF8; i++)
+    {
+        clustersIdxs[i] = nextFileCluster;
+        nextFileCluster = read_fat_entry(hd, nextFileCluster, partDesc);
+    }
+
+    return clustersIdxs;
+}
+
+/// @brief finds the index of the last cluster in the chain
+/// @param hd 
+/// @param firstCluster the first cluster in the chain
+/// @param partDesc 
+/// @return the index of the last cluster in that chain
+uint32_t get_last_cluster_in_chain(ata_drive hd, uint32_t firstCluster, partition_descr *partDesc) {
+    uint32_t currFileCluster = firstCluster;
+    uint32_t nextFileCluster = read_fat_entry(hd, currFileCluster, partDesc);
+    //follows cluster chain
+    while (nextFileCluster < 0x0FFFFFF8)
+    {
+        currFileCluster = nextFileCluster;
+        nextFileCluster = read_fat_entry(hd, nextFileCluster, partDesc);
+    }
+
+    return currFileCluster;
+}
+
 /// @brief allocates space for data in the FAT
 /// @param hd 
 /// @param partDesc 
-/// @param start_cluster the starting cluster of the chain
-/// @param size the size needing allocation
+/// @param startCluster the last cluster of the current chain
+/// @param clustersNeeded the amount clusters needed 
 /// @return the amount of clusters allocated, -1 if there is not enough space
-int allocate_space(ata_drive hd, partition_descr partDesc, uint32_t start_cluster, uint32_t size) {
-    int32_t clustersNeeded = (size / (SECTOR_SIZE * partDesc.bpb.sectorPerCluster));
-
+bool allocate_new_clusters(ata_drive hd, partition_descr *partDesc, uint32_t startCluster, int32_t clustersNeeded) {
     if(clustersNeeded == 0)
         return 1;
-
+    
+    uint32_t lastCluster = get_last_cluster_in_chain(hd, startCluster, partDesc);
     //checks if there are enough free clusters 
-    if (partDesc.freeClusters < clustersNeeded)
-        return -1;
+    if (partDesc->FSInfo.freeClusterCount < clustersNeeded)
+        return false;
     
-    uint32_t* clustersIdx = find_cluster_chain(hd, partDesc, clustersNeeded);
+    uint32_t* clustersIdx = find_free_clusters(hd, partDesc, clustersNeeded);
     
-    if(!clustersIdx)
-        return -1;
+    if(!clustersIdx) {
+        return false;
+    }
     
 
-    write_fat_entry(hd, start_cluster, partDesc, *clustersIdx);
+    write_fat_entry(hd, lastCluster, partDesc, *clustersIdx);
 
     
     // creates cluster chain in fat
@@ -125,116 +240,520 @@ int allocate_space(ata_drive hd, partition_descr partDesc, uint32_t start_cluste
 
     write_fat_entry(hd, clustersIdx[clustersNeeded - 1], partDesc, 0x0FFFFFF8);
 
-    return clustersNeeded  + 1;
+    free(clustersIdx);
+
+    //updates FSInfo
+    partDesc->FSInfo.freeClusterCount -= clustersNeeded;
+    update_FSInfo(hd, partDesc);
+
+    return true;
 }
 
-/// @brief creates file in root directory
+/// @brief removes an amount of clusters from the end of cluster chain
 /// @param hd 
-/// @param name name string
-/// @param ext ext string
-void create_file(ata_drive hd, char* path, char* name, char* ext, partition_descr partDesc) {
+/// @param partDesc 
+/// @param startCluster the starting cluster of the chain
+/// @param chainSize the size of the chain
+/// @param clustersToRemove the amount of clusters to remove
+void remove_clusters_from_chain(ata_drive hd, partition_descr *partDesc, uint32_t startCluster, uint32_t chainSize, int32_t clustersToRemove) {
+    uint32_t* clustersIdx = find_cluster_chain(hd, partDesc, startCluster, chainSize);
+
+    // if no chain found
+    if(!clustersIdx)
+        return;
+    
+
+    // creates cluster chain in fat
+    for (int32_t i = chainSize + clustersToRemove; i < chainSize; i++)
+    {
+        write_fat_entry(hd, clustersIdx[i], partDesc, 0);
+    }
+
+    if ((int32_t)chainSize > -clustersToRemove)
+        write_fat_entry(hd, clustersIdx[chainSize + clustersToRemove - 1], partDesc, 0x0FFFFFF8);
+
+    partDesc->FSInfo.freeClusterCount -= clustersToRemove;
+    update_FSInfo(hd, partDesc);
+
+    free(clustersIdx);
+}
+
+static bool inline is_valid_sfn_char(char c) {
+    return (strchr(SFN_ALLOWED, c) != NULL);
+}
+
+/// @brief creats sfn from provided lfn
+/// @param lfn the lfn
+/// @param name buffer for sfn name
+/// @param ext buffer for sfn ext
+/// @param id a unique id to stop duplications
+void generate_sfn(const char *lfn, char* name, char* ext, int id) {
+    int name_len = 0, ext_len = 0, i;
+
+    //extracts name
+    for(i = 0; lfn[i] && (lfn[i] != '.') && (name_len < 8); i++) {
+        if(is_valid_sfn_char(toupper(lfn[i])))
+            name[name_len++] = toupper(lfn[i]);
+    }
+
+    // if there is an ext add it
+    if(lfn[i] == '.') {
+        i++;
+        for(; lfn[i] && (ext_len < 3); i++) {
+            if(is_valid_sfn_char(toupper(lfn[i])))
+                ext[ext_len++] = toupper(lfn[i]);
+        }
+    }
+
+    if(id > 0) {
+        name[6] = '~';
+        itoa(id, name + 7, 10);
+    }
+}
+
+/// @brief creates file in a specified directory 
+/// @param hd 
+/// @param dirCluster the first cluster of the dir in which the file should be created
+/// @param fileName the name of the file
+/// @param partDesc 
+void create_file_by_dir_cluster(ata_drive hd, uint32_t dirCluster, char* fileName, partition_descr *partDesc) {
     directory_entry_fat32 dirent[16];
 
-    uint32_t resDirCluster = find_dir_first_cluster(hd, path, partDesc);
+    uint32_t nextDirCluster = dirCluster;
 
-    //file already exists
-    if(resDirCluster == 0xFFFFFFFF)
-        return;
-    
-    uint32_t nextDirCluster = find_dir_first_cluster(hd, path, partDesc);
-    //if path not found
-    if(nextDirCluster == -1)
-        return;
-    
-    bool moreEnt = 1;
 
-    while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
+    int lfnCount = (strlen(fileName) + 12)/13; // num of lfn entries needed
+    uint16_t name_utf16[256];
+
+    utf8_to_utf16(fileName, name_utf16);
+
+    char name[9] = "        ", ext[4] =  "   ";
+    generate_sfn(fileName, name, ext, 0);
+    uint8_t checksum = 0;
+    for (int i = 0; i < 11; i++) {
+        if (i < 8)
+            checksum = ((checksum >> 1) | (checksum << 7)) + name[i];
+        else
+            checksum = ((checksum >> 1) | (checksum << 7)) + ext[i - 8];
+    }
+
+    LFN_entry_fat32* lfns = (LFN_entry_fat32*) malloc(lfnCount * sizeof(LFN_entry_fat32));
+
+    for (int i = 0; i < lfnCount; i++) {
+        memset((char*)(lfns+i), 0xFF, sizeof(LFN_entry_fat32)); // Fill unused bytes
+
+        lfns[i].order = (i + 1) | (i == lfnCount - 1 ? 0x40 : 0x00);
+        lfns[i].attributes = 0x0F;
+        lfns[i].longEntryType = 0x00;
+        lfns[i].checksum = checksum;
+        lfns[i].zero = 0;
+
+        // Copy name parts
+        memcpy(lfns[i].chars1, &name_utf16[i * 13], 5 * 2);
+        memcpy(lfns[i].chars2, &name_utf16[i * 13 + 5], 6 * 2);
+        memcpy(lfns[i].chars3, &name_utf16[i * 13 + 11], 2 * 2);
+    }
+    directory_entry_fat32* lfnsDirEnt = (directory_entry_fat32*) lfns;
+    bool found = 0;
+    while (!found && (nextDirCluster < 0x0FFFFFF8)) {
         int dirSectorOffset = 0;
-        uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+        uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
         do {
             //findes empty entry
             read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
             int emptyEntIdx = -1;
-            for (int i = 0; i < 16; i++) {
-                if((dirent[i].name[0] == 0x00) || (dirent[i].name[0]  == 0xE5)) { // end of dir entries
-                    emptyEntIdx = i;
-                    break;
+            int emptyEntrySeqLen = 0;
+            for (int i = 0; (i < 16) && (emptyEntrySeqLen <= lfnCount); i++) {
+                if(dirent[i].name[0] == 0x00) { // end of dir entries
+                    emptyEntrySeqLen += 16 - i;
+                    emptyEntIdx = emptyEntIdx == -1 ? i : emptyEntIdx;
+                }
+                if(dirent[i].name[0] == 0xE5) {
+                    emptyEntrySeqLen++;
+                    emptyEntIdx = emptyEntIdx == -1 ? i : emptyEntIdx;
                 }
             }
-            terminal_write_int(emptyEntIdx, 10);
-            if(emptyEntIdx == -1)
+
+            //checks if enough space was found
+            if(emptyEntrySeqLen <= lfnCount)
                 continue;
+            
+            found = 1;
+
+            int i = 0;
+            for( ; i < lfnCount; i++) {
+                dirent[emptyEntIdx + lfnCount - 1 - i] = lfnsDirEnt[i];
+            }
+
+            free(lfns);
+            int sfnEntIdx = i + emptyEntIdx;
             // creates dir entry for the file
-            for (int j = 0; (j < 8) && (name[j] != '\0'); j++)
-                dirent[emptyEntIdx].name[j] = name[j];
+            for (int j = 0; j < 8; j++)
+                dirent[sfnEntIdx].name[j] = name[j];
             
             for (int j = 0; j < 3; j++) {
-                dirent[emptyEntIdx].ext[j] = ext[j];
+                dirent[sfnEntIdx].ext[j] = ext[j];
             }
-            dirent[emptyEntIdx].size = 0;
-            dirent[emptyEntIdx].attributes = 0x0;
-            uint32_t firstCluster = find_empty_Cluster(hd, partDesc);
-            dirent[emptyEntIdx].firstClusterHi = (uint16_t )(firstCluster >> 16);
-            dirent[emptyEntIdx].firstClusterLo = (uint16_t)(firstCluster & 0xffff);
+            dirent[sfnEntIdx].size = 0;
+            dirent[sfnEntIdx].attributes = 0x0;
+            uint32_t firstCluster = 0;
+            dirent[sfnEntIdx].firstClusterHi = (uint16_t )(firstCluster >> 16);
+            dirent[sfnEntIdx].firstClusterLo = (uint16_t)(firstCluster & 0xffff);
 
-            // updates dir and fat
-            write_fat_entry(hd, firstCluster, partDesc, 0x0FFFFFF8);
+            // updates dir
             write28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
             flush(hd);
+        } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && !found);
+        // gets next cluster belonging to the dir
+        nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
+    }
+    if (!found)
+        terminal_write_string("directory full\n");
+}
+
+/// @brief deletes the specified file in a specified dir
+/// @param hd 
+/// @param dirCluster the first cluster of the dir
+/// @param fileName the name of the file
+/// @param partDesc 
+void delete_file_by_dir_cluster(ata_drive hd, uint32_t dirCluster, char* fileName, partition_descr *partDesc) {
+    directory_entry_fat32 dirent[16];
+    LFN_entry_fat32 lfnEnt[20];
+    int lfnIdx = 0;
+
+    uint32_t nextDirCluster = dirCluster;
+    bool moreEnt = true;
+
+    while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
+        int dirSectorOffset = 0;
+        uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
+        do {
+            read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            int fileEntIdx = -1;
+            for (int i = 0; i < 16; i++) {
+                if(dirent[i].name[0] == 0x00) { // end of dir entries
+                    moreEnt = false;
+                    break;
+                }
+                if(dirent[i].name[0]  == 0xE5) // skip, unused entry
+                    continue;
+
+                if((dirent[i].attributes & 0x0F) == 0x0F) { // long name dir entry
+                    lfnEnt[lfnIdx++] = *((LFN_entry_fat32 *) &dirent[i]);
+                    continue;
+                }
+
+                if (lfnIdx > 0) {
+                    char nameBuff[256] = {0};
+                    read_long_filename(lfnEnt, lfnIdx, nameBuff);
+
+                    if(strcmp(fileName, nameBuff)) {
+                        lfnIdx = 0;
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+
+                fileEntIdx = i;
+                break;
+            }
+            if(fileEntIdx == -1)
+                continue;
+            // gets first cluster of file
+            uint32_t firstFileCluster = ((uint32_t)dirent[fileEntIdx].firstClusterHi) >> 16
+                                     | ((uint32_t)dirent[fileEntIdx].firstClusterLo);
+
+            uint32_t chainSize = clusterChainLen(hd, firstFileCluster, partDesc);
+            remove_clusters_from_chain(hd, partDesc, firstFileCluster, chainSize, -chainSize);
+
+            //marks all lfn entries and the file entry as deleted
+            for(int j = fileEntIdx - lfnIdx; j <= fileEntIdx; j++)
+                dirent[j].name[0] = 0xE5;
+            write28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            flush(hd);
+
             break;
-        } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+        } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt);
         // gets next cluster belonging to the dir
         nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
     }
 }
 
-/*void create_dir(ata_drive hd, char* name, partition_descr partDesc) {
+/// @brief initializes a new dir
+/// @param hd 
+/// @param dirFirstCluster the first cluster of the dir
+/// @param partentDirFirstCluster the first cluster of the parent dir
+/// @param partDesc 
+void init_dir(ata_drive hd, uint32_t dirFirstCluster, uint32_t partentDirFirstCluster,partition_descr *partDesc) {
+    directory_entry_fat32 dirent[2];
+    empty_out_cluster(hd, dirFirstCluster, partDesc);
+
+    uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (dirFirstCluster - 2);
+    read28(hd, dirSector, (uint8_t*)&dirent[0], 2*sizeof(directory_entry_fat32));
+
+    //sets up . and .. entries
+    char* ext = "   ";
+    char* dotName = ".       ";
+    char* dotDotName = "..      ";
+    for (int j = 0; j < 8; j++) {
+        dirent[0].name[j] = dotName[j];
+        dirent[1].name[j] = dotDotName[j];
+    }
+    
+    for (int j = 0; j < 3; j++) {
+        dirent[0].ext[j] = ext[j];
+        dirent[1].ext[j] = ext[j];
+    }
+
+    dirent[0].size = 0;
+    dirent[0].attributes = 0x10;
+    dirent[0].firstClusterHi = (uint16_t )(dirFirstCluster >> 16);
+    dirent[0].firstClusterLo = (uint16_t)(dirFirstCluster & 0xffff);
+
+    dirent[1].size = 0;
+    dirent[1].attributes = 0x10;
+    dirent[1].firstClusterHi = (uint16_t )(partentDirFirstCluster >> 16);
+    dirent[1].firstClusterLo = (uint16_t)(partentDirFirstCluster & 0xffff);
+
+
+    write28(hd, dirSector, (uint8_t*)&dirent[0], 2*sizeof(directory_entry_fat32));
+}
+
+/// @brief creates a new dir 
+/// @param hd 
+/// @param parentCluster the first cluster of the parent dir 
+/// @param dirName the name of the current dir
+/// @param partDesc 
+void create_dir_by_parent_cluster(ata_drive hd, uint32_t parentCluster, char* dirName, partition_descr *partDesc) {
     directory_entry_fat32 dirent[16];
+    uint32_t nextDirCluster = parentCluster;
 
-    uint32_t nextDirCluster = partDesc.bpb.rootCluster;
-    bool moreEnt = 1;
+    int lfnCount = (strlen(dirName) + 12)/13; // num of lfn entries needed
+    uint16_t name_utf16[256];
 
-    while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
+    utf8_to_utf16(dirName, name_utf16);
+
+    char name[9] = "        ", ext[4] =  "   ";
+    generate_sfn(dirName, name, ext, 0);
+    uint8_t checksum = 0;
+    for (int i = 0; i < 11; i++) {
+        if (i < 8)
+            checksum = ((checksum >> 1) | (checksum << 7)) + name[i];
+        else
+            checksum = ((checksum >> 1) | (checksum << 7)) + ext[i - 8];
+    }
+
+    LFN_entry_fat32* lfns = (LFN_entry_fat32*) malloc(lfnCount * sizeof(LFN_entry_fat32));
+
+    for (int i = 0; i < lfnCount; i++) {
+        memset((char*)(lfns+i), 0xFF, sizeof(LFN_entry_fat32)); // Fill unused bytes
+
+        lfns[i].order = (i + 1) | (i == lfnCount - 1 ? 0x40 : 0x00);
+        lfns[i].attributes = 0x0F;
+        lfns[i].longEntryType = 0x00;
+        lfns[i].checksum = checksum;
+        lfns[i].zero = 0;
+
+        // Copy name parts
+        memcpy(lfns[i].chars1, &name_utf16[i * 13], 5 * 2);
+        memcpy(lfns[i].chars2, &name_utf16[i * 13 + 5], 6 * 2);
+        memcpy(lfns[i].chars3, &name_utf16[i * 13 + 11], 2 * 2);
+    }
+    directory_entry_fat32* lfnsDirEnt = (directory_entry_fat32*) lfns;
+    bool found = 0;
+    while (!found && (nextDirCluster < 0x0FFFFFF8)) {
         int dirSectorOffset = 0;
-        uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+        uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
         do {
             //findes empty entry
             read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
             int emptyEntIdx = -1;
-            for (int i = 0; i < 16; i++) {
-                if((dirent[i].name[0] == 0x00) || (dirent[i].name[0]  == 0xE5)) { // end of dir entries
-                    emptyEntIdx = i;
-                    break;
+            int emptyEntrySeqLen = 0;
+            for (int i = 0; (i < 16) && (emptyEntrySeqLen <= lfnCount); i++) {
+                if(dirent[i].name[0] == 0x00) { // end of dir entries
+                    emptyEntrySeqLen += 16 - i;
+                    emptyEntIdx = emptyEntIdx == -1 ? i : emptyEntIdx;
+                }
+                if(dirent[i].name[0] == 0xE5) {
+                    emptyEntrySeqLen++;
+                    emptyEntIdx = emptyEntIdx == -1 ? i : emptyEntIdx;
                 }
             }
-            if(emptyEntIdx == -1)
+
+            //checks if enough space was found
+            if(emptyEntrySeqLen <= lfnCount)
                 continue;
+            
+            found = 1;
+
+            int i = 0;
+            for( ; i < lfnCount; i++) {
+                dirent[emptyEntIdx + lfnCount - 1 - i] = lfnsDirEnt[i];
+            }
+
+            free(lfns);
+            int sfnEntIdx = i + emptyEntIdx;
             // creates dir entry for the file
-            for (int j = 0; (j < 8) && (name[j] != '\0'); j++)
-                dirent[emptyEntIdx].name[j] = name[j];
+            for (int j = 0; j < 8; j++)
+                dirent[sfnEntIdx].name[j] = name[j];
             
             for (int j = 0; j < 3; j++) {
-                dirent[emptyEntIdx].ext[j] = ext[j];
+                dirent[sfnEntIdx].ext[j] = ext[j];
             }
-            dirent[emptyEntIdx].size = 0;
-            dirent[emptyEntIdx].attributes = 0x0;
+            dirent[sfnEntIdx].size = 0;
+            dirent[sfnEntIdx].attributes = 0x10;
             uint32_t firstCluster = find_empty_Cluster(hd, partDesc);
-            dirent[emptyEntIdx].firstClusterHi = (uint16_t )(firstCluster >> 16);
-            dirent[emptyEntIdx].firstClusterLo = (uint16_t)(firstCluster & 0xffff);
+            dirent[sfnEntIdx].firstClusterHi = (uint16_t )(firstCluster >> 16);
+            dirent[sfnEntIdx].firstClusterLo = (uint16_t)(firstCluster & 0xffff);
+
+            partDesc->FSInfo.freeClusterCount -= 1;
+            update_FSInfo(hd, partDesc);
 
             // updates dir and fat
             write_fat_entry(hd, firstCluster, partDesc, 0x0FFFFFF8);
             write28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
             flush(hd);
-            break;
-        } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+
+            init_dir(hd, firstCluster, parentCluster, partDesc);
+        } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && !found);
         // gets next cluster belonging to the dir
         nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
     }
-}*/
+
+    if (!found) {
+        free(lfns);
+        terminal_write_string("directory full\n");
+    }
+}
+
+/// @brief clears all contents of a dir
+/// @param hd 
+/// @param dirCluster the first cluster of the dir
+/// @param partDesc 
+void clear_dir_by_cluster (ata_drive hd, uint32_t dirCluster, partition_descr *partDesc) {
+    directory_entry_fat32 dirent[16];
+    uint32_t nextDirCluster = dirCluster;
+    bool moreEnt = 1;
+
+    while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
+        int dirSectorOffset = 0;
+        uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
+        do {
+            read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            for (int i = 0; i < 16; i++) {
+                char nameBuff[256] = {0};
+                if(dirent[i].name[0] == 0x00) { // end of dir entries
+                    moreEnt = 0;
+                    break;
+                }
+                if(dirent[i].name[0]  == 0xE5) // skip, unused entry
+                    continue;
+
+                if((dirent[i].attributes & 0x0F) == 0x0F) { // long name dir entry
+                    continue;
+                }
+
+                uint32_t firstEntCluster = ((uint32_t)dirent[i].firstClusterHi) << 16
+                                          | ((uint32_t)dirent[i].firstClusterLo);
+                // if dir, recursivly read its contents
+                if((dirent[i].attributes & 0x10) == 0x10) {
+                    if (dirent[i].name[0] == '.')
+                        continue;
+                    clear_dir_by_cluster(hd, firstEntCluster, partDesc);
+                }
+
+                uint32_t chainSize = clusterChainLen(hd, firstEntCluster, partDesc);
+                remove_clusters_from_chain(hd, partDesc, firstEntCluster, chainSize, -chainSize);
+            }
+        } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt);
+        // gets next cluster belonging to the dir
+        nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
+    }
+}
+
+/// @brief deletes a dir
+/// @param hd 
+/// @param parentCluster the first cluster of the dir
+/// @param dirName the name of the dir to be delted
+/// @param partDesc 
+void delete_dir_by_parent_cluster(ata_drive hd, uint32_t parentCluster, char* dirName, partition_descr *partDesc) {
+    directory_entry_fat32 dirent[16];
+    LFN_entry_fat32 lfnEnt[20];
+    int lfnIdx = 0;
+    uint32_t firstDirCluster;
+    uint32_t nextParentDirCluster = parentCluster;
+    bool moreEnt = true;
+    bool found = false;
+    // finds dir first cluster and deletes its entry from the parent dir
+    while (moreEnt && (nextParentDirCluster < 0x0FFFFFF8) && !found) {
+        int dirSectorOffset = 0;
+        uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextParentDirCluster - 2);
+        do {
+            read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            int fileEntIdx = -1;
+            for (int i = 0; i < 16; i++) {
+                if(dirent[i].name[0] == 0x00) { // end of dir entries
+                    moreEnt = false;
+                    break;
+                }
+                if(dirent[i].name[0]  == 0xE5) // skip, unused entry
+                    continue;
+
+                if((dirent[i].attributes & 0x0F) == 0x0F) { // long name dir entry
+                    lfnEnt[lfnIdx++] = *((LFN_entry_fat32 *) &dirent[i]);
+                    continue;
+                }
+
+                if (lfnIdx > 0) {
+                    char nameBuff[256] = {0};
+                    read_long_filename(lfnEnt, lfnIdx, nameBuff);
+
+                    if(strcmp(dirName, nameBuff)) {
+                        lfnIdx = 0;
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+
+                fileEntIdx = i;
+                break;
+            }
+            if(fileEntIdx == -1)
+                continue;
+            
+            found = true;
+
+            // gets first cluster of file
+            firstDirCluster = ((uint32_t)dirent[fileEntIdx].firstClusterHi) >> 16
+                            | ((uint32_t)dirent[fileEntIdx].firstClusterLo);
+            //marks all lfn entries and the file entry as deleted
+            for(int j = fileEntIdx - lfnIdx; j <= fileEntIdx; j++)
+                dirent[j].name[0] = 0xE5;
+            write28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+            flush(hd);
+            break;
+        } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt && !found);
+        // gets next cluster belonging to the dir
+        nextParentDirCluster = read_fat_entry(hd, nextParentDirCluster, partDesc);
+    }
+
+    //deletes the dir
+    clear_dir_by_cluster(hd, firstDirCluster, partDesc);
+    uint32_t chainSize = clusterChainLen(hd, firstDirCluster, partDesc);
+    remove_clusters_from_chain(hd, partDesc, firstDirCluster, chainSize, -chainSize);
+}
 
 
-void write_to_file_by_dir_cluster(ata_drive hd, uint32_t dirFirstClust, const char *fileName, partition_descr partDesc, const char *data, uint32_t size) {
+/// @brief writes to a file in a certian dir
+/// @param hd 
+/// @param dirFirstClust the first cluster of the dir in which the file is located
+/// @param fileName the name of the file
+/// @param partDesc 
+/// @param data the data to write
+/// @param size size of the data to write
+void write_to_file_by_dir_cluster(ata_drive hd, uint32_t dirFirstClust, const char *fileName, partition_descr *partDesc, const char *data, uint32_t size) {
     directory_entry_fat32 dirent[16];
     LFN_entry_fat32 lfnEnt[20];
     int lfnIdx = 0;
@@ -244,7 +763,7 @@ void write_to_file_by_dir_cluster(ata_drive hd, uint32_t dirFirstClust, const ch
 
     while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
         int dirSectorOffset = 0;
-        uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+        uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
         do {
             read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
             int fileEntIdx = -1;
@@ -280,14 +799,37 @@ void write_to_file_by_dir_cluster(ata_drive hd, uint32_t dirFirstClust, const ch
             // gets first cluster of file
             uint32_t firstFileCluster = ((uint32_t)dirent[fileEntIdx].firstClusterHi) >> 16
                                      | ((uint32_t)dirent[fileEntIdx].firstClusterLo);
-            // updates the entry size
-            dirent[fileEntIdx].size = size;
 
-            if (allocate_space(hd, partDesc, firstFileCluster, size) == -1) {
-                terminal_write_string("Not enough Space");
-                break;
+            uint32_t currentClusterAmount = dirent[fileEntIdx].size / (SECTOR_SIZE * partDesc->bpb.sectorPerCluster);
+            if (dirent[fileEntIdx].size % (SECTOR_SIZE * partDesc->bpb.sectorPerCluster))
+                currentClusterAmount++;
+            uint32_t neededClusterAmount = size / (SECTOR_SIZE * partDesc->bpb.sectorPerCluster);
+            if (size % (SECTOR_SIZE * partDesc->bpb.sectorPerCluster))
+                neededClusterAmount++;
+
+            int32_t clustersNeeded = (int32_t)neededClusterAmount - (int32_t)currentClusterAmount;
+            int noClusters = (clustersNeeded > 0 && firstFileCluster == 0);
+            if(noClusters) {
+                firstFileCluster = find_empty_Cluster(hd, partDesc);
+                write_fat_entry(hd, firstFileCluster, partDesc, 0x0FFFFFF8);
+                dirent[fileEntIdx].firstClusterHi = (uint16_t )(firstFileCluster >> 16);
+                dirent[fileEntIdx].firstClusterLo = (uint16_t)(firstFileCluster & 0xffff);
+                clustersNeeded--;
+            }
+            if (clustersNeeded >= 0) {
+                if ( firstFileCluster >= 0x0FFFFFF8 || !allocate_new_clusters(hd, partDesc, firstFileCluster, clustersNeeded)) {
+                    terminal_write_string("Not enough Space");
+                    break;
+                }
+                partDesc->FSInfo.freeClusterCount -= noClusters;
+                update_FSInfo(hd, partDesc);
+            } else {                
+                remove_clusters_from_chain(hd, partDesc, firstFileCluster, currentClusterAmount, clustersNeeded);
             }
 
+
+            // updates the entry size
+            dirent[fileEntIdx].size = size;
             write28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
             flush(hd);
 
@@ -297,7 +839,7 @@ void write_to_file_by_dir_cluster(ata_drive hd, uint32_t dirFirstClust, const ch
             while (nextFileCluster < 0x0FFFFFF8 )
             {
                 
-                uint32_t fileSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextFileCluster - 2);
+                uint32_t fileSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextFileCluster - 2);
                 int sectorOffset = 0;
                 
 
@@ -309,7 +851,7 @@ void write_to_file_by_dir_cluster(ata_drive hd, uint32_t dirFirstClust, const ch
                     flush(hd);
                     data += amountToWrite;
 
-                    if(++sectorOffset > partDesc.bpb.sectorPerCluster) {
+                    if(++sectorOffset > partDesc->bpb.sectorPerCluster) {
                         SIZE -= 512;
                         break;
                     }
@@ -319,20 +861,9 @@ void write_to_file_by_dir_cluster(ata_drive hd, uint32_t dirFirstClust, const ch
             }
 
             break;
-        } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+        } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt);
         // gets next cluster belonging to the dir
         nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
-    }
-}
-
-/// @brief convets utf16 to utf8 ascii (assuming only utf8 compatible chars are used)
-/// @param utf16 the utf16 string
-/// @param ascii the buffer in which the utf8 string will be put
-/// @param length length of utf16 string
-void utf16_to_ascii(uint16_t *utf16, char *ascii, int length) {
-    for (int i = 0; i < length; i++) {
-        if (utf16[i] == 0xFFFF || utf16[i] == 0) break;
-        ascii[i] = (char)utf16[i];
     }
 }
 
@@ -345,11 +876,11 @@ void read_long_filename(LFN_entry_fat32 *lfn_entries, int count, char *output) {
 
     // Process LFN entries in reverse order
     for (int i = count - 1; i >= 0; i--) {
-        utf16_to_ascii((uint16_t*)lfn_entries[i].chars1, &output[pos], 5);
+        utf16_to_utf8((uint16_t*)lfn_entries[i].chars1, &output[pos], 5);
         pos += 5;
-        utf16_to_ascii((uint16_t*)lfn_entries[i].chars2, &output[pos], 6);
+        utf16_to_utf8((uint16_t*)lfn_entries[i].chars2, &output[pos], 6);
         pos += 6;
-        utf16_to_ascii((uint16_t*)lfn_entries[i].chars3, &output[pos], 2);
+        utf16_to_utf8((uint16_t*)lfn_entries[i].chars3, &output[pos], 2);
         pos += 2;
     }
 
@@ -359,8 +890,7 @@ void read_long_filename(LFN_entry_fat32 *lfn_entries, int count, char *output) {
 /// @brief reads a dir and prints its contents
 /// @param hd
 /// @param firstCluster first cluster of the dir
-void read_dir_by_cluster(ata_drive hd, uint32_t firstCluster, partition_descr partDesc) {
-
+void read_dir_by_cluster(ata_drive hd, uint32_t firstCluster, partition_descr *partDesc) {
     directory_entry_fat32 dirent[16];
     LFN_entry_fat32 lfnEnt[20];
     int lfnIdx = 0;
@@ -369,7 +899,7 @@ void read_dir_by_cluster(ata_drive hd, uint32_t firstCluster, partition_descr pa
     
     while (moreEnt && (nextDirCluster < 0x0FFFFFF8)) {
         int dirSectorOffset = 0;
-        uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+        uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
         do {
             read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
             for (int i = 0; i < 16; i++) {
@@ -412,13 +942,12 @@ void read_dir_by_cluster(ata_drive hd, uint32_t firstCluster, partition_descr pa
                 //read file
                 //read_file_by_cluster(hd, firstEntCluster, dirent[i].size, partDesc);
             }
-        } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+        } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt);
         // gets next cluster belonging to the dir
         nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
     }
     terminal_write_string("\n");
 }
-
 
 /// @brief checks whether or not a certain file is in a dir
 /// @param hd 
@@ -426,7 +955,7 @@ void read_dir_by_cluster(ata_drive hd, uint32_t firstCluster, partition_descr pa
 /// @param fileName
 /// @param partDesc 
 /// @return true if found, false otherwise
-bool is_file_in_dir(ata_drive hd, uint32_t dirFirstCluster, const char* fileName, partition_descr partDesc) {
+bool is_file_in_dir(ata_drive hd, uint32_t dirFirstCluster, const char* fileName, partition_descr *partDesc) {
     uint32_t nextDirCluster = dirFirstCluster;
 
     directory_entry_fat32 dirent[16];
@@ -436,7 +965,7 @@ bool is_file_in_dir(ata_drive hd, uint32_t dirFirstCluster, const char* fileName
     bool moreEnt = true;
     while ((nextDirCluster < 0x0FFFFFF8) && moreEnt) {
             int dirSectorOffset = 0;
-            uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+            uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
             do {
                 read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
                 for (int i = 0; i < 16; i++) {
@@ -459,17 +988,18 @@ bool is_file_in_dir(ata_drive hd, uint32_t dirFirstCluster, const char* fileName
 
                         if(strcmp(fileName, nameBuff))
                             continue;
+                    } else {
+                        continue;
                     }
 
                     return true;
                 }
-            } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+            } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt);
             // gets next cluster belonging to the dir
             nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
     }
     return false;
 }
-
 
 /// @brief returns the dir ent of a specified file
 /// @param hd 
@@ -477,7 +1007,7 @@ bool is_file_in_dir(ata_drive hd, uint32_t dirFirstCluster, const char* fileName
 /// @param fileName 
 /// @param partDesc 
 /// @return the entry if found, garbage otherwise
-directory_entry_fat32 find_file_dir_entry(ata_drive hd, uint32_t dirFirstCluster, const char* fileName, partition_descr partDesc) {
+directory_entry_fat32 find_file_dir_entry(ata_drive hd, uint32_t dirFirstCluster, const char* fileName, partition_descr *partDesc) {
     uint32_t nextDirCluster = dirFirstCluster;
 
     directory_entry_fat32 dirent[16];
@@ -487,7 +1017,7 @@ directory_entry_fat32 find_file_dir_entry(ata_drive hd, uint32_t dirFirstCluster
     bool moreEnt = true;
     while ((nextDirCluster < 0x0FFFFFF8) && moreEnt) {
             int dirSectorOffset = 0;
-            uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+            uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
             do {
                 read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
                 for (int i = 0; i < 16; i++) {
@@ -516,7 +1046,7 @@ directory_entry_fat32 find_file_dir_entry(ata_drive hd, uint32_t dirFirstCluster
 
                     return dirent[i];
                 }
-            } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt);
+            } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt);
             // gets next cluster belonging to the dir
             nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
     }
@@ -528,7 +1058,11 @@ directory_entry_fat32 find_file_dir_entry(ata_drive hd, uint32_t dirFirstCluster
 /// @param firstCluster the cluster the file starts in
 /// @param size the size of the file
 /// @param partDesc 
-void read_file_by_cluster(ata_drive hd, uint32_t firstCluster, uint32_t size, partition_descr partDesc) {
+void read_file_by_cluster(ata_drive hd, uint32_t firstCluster, uint32_t size, partition_descr *partDesc) {
+    //if file is empty
+    if (size == 0)
+        return;
+    
     int32_t SIZE = (int32_t)size;
     uint32_t nextFileCluster = firstCluster;
     uint8_t buffer[513];
@@ -536,7 +1070,7 @@ void read_file_by_cluster(ata_drive hd, uint32_t firstCluster, uint32_t size, pa
     while (nextFileCluster < 0x0FFFFFF8)
     {
         
-        uint32_t fileSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextFileCluster - 2);
+        uint32_t fileSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextFileCluster - 2);
         int sectorOffset = 0;
         
         // reads all sectors belonging to file from curr file cluster
@@ -545,7 +1079,7 @@ void read_file_by_cluster(ata_drive hd, uint32_t firstCluster, uint32_t size, pa
             read28(hd, fileSector + sectorOffset, buffer, 512);
             buffer[SIZE > 512 ? 512 : SIZE] = '\0';
 
-            if(++sectorOffset > partDesc.bpb.sectorPerCluster)
+            if(++sectorOffset > partDesc->bpb.sectorPerCluster)
                 break;
             terminal_write_string((char*)buffer);
         }
@@ -560,9 +1094,9 @@ void read_file_by_cluster(ata_drive hd, uint32_t firstCluster, uint32_t size, pa
 /// @param path the specified path
 /// @param partDesc 
 /// @return the first cluster index of the entry
-uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr partDesc) {
-    uint32_t currentDirCluster = partDesc.bpb.rootCluster;
-
+uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr *partDesc) {
+    uint32_t currentDirCluster = partDesc->bpb.rootCluster;
+    //terminal_write_string(path);
     directory_entry_fat32 dirent[16];
     LFN_entry_fat32 lfnEnt[20];
     int lfnIdx = 0;
@@ -571,10 +1105,9 @@ uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr 
         uint32_t nextDirCluster = currentDirCluster;
         bool moreEnt = 1;
         bool found = 0;
-        int nextDirNameLen = strlen(nextDirName);
         while (moreEnt && (nextDirCluster < 0x0FFFFFF8) && !found) {
             int dirSectorOffset = 0;
-            uint32_t dirSector = partDesc.fatDesc.data_start + partDesc.bpb.sectorPerCluster * (nextDirCluster - 2);
+            uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
             do {
                 read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
                 for (int i = 0; i < 16; i++) {
@@ -597,18 +1130,8 @@ uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr 
 
                         if(strcmp(nextDirName, nameBuff))
                             continue;
+
                     } else {
-                        char dir[9] = "        ";
-                        for(int j = 0; j < nextDirNameLen; j++)
-                            dir[j] = nextDirName[j];
-                        dir[9] = '\0';
-    
-                        char *dirName = "        ";
-                        for (int j = 0; j < 8; j++)
-                        {
-                            dirName[j] = dirent[i].name[j];
-                        }
-                        if(strcmp(dir, dirName))
                             continue;
                     }
                     
@@ -619,16 +1142,16 @@ uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr 
                     currentDirCluster = EntCluster;
                     found = 1;
                 }
-            } while ((++dirSectorOffset <= partDesc.bpb.sectorPerCluster) && moreEnt && !found);
+            } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt && !found);
             // gets next cluster belonging to the dir
             nextDirCluster = read_fat_entry(hd, nextDirCluster, partDesc);
         }
         if (!found)
-            return -1;
+            return 0xFFFFFFFF;
         
         nextDirName = strtok(0, "/");
     }
-
+    
     return currentDirCluster;
 }
 
@@ -636,14 +1159,19 @@ uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr 
 /// @param hd 
 /// @param path 
 /// @param partDesc 
-void read_dir(ata_drive hd, const char* path, partition_descr partDesc) {
+void read_dir(ata_drive hd, const char* path, partition_descr *partDesc) {
     read_dir_by_cluster(hd, find_dir_first_cluster(hd, path, partDesc), partDesc);
 }
 
-void read_file(ata_drive hd, const char* dirPath, const char* fileName, partition_descr partDesc) {
+/// @brief reads a certian file
+/// @param hd 
+/// @param dirPath the path of the dir the file is loacted in
+/// @param fileName the name of the file
+/// @param partDesc 
+void read_file(ata_drive hd, const char* dirPath, const char* fileName, partition_descr *partDesc) {
     uint32_t dirsCluster = find_dir_first_cluster(hd, dirPath, partDesc);
     if(dirsCluster == 0xFFFFFFFF) { //invalid path
-        terminal_write_string("inalid path");
+        terminal_write_string("invalid path");
         return;
     }
     if(!is_file_in_dir(hd, dirsCluster, fileName, partDesc)) { // file not found
@@ -657,11 +1185,95 @@ void read_file(ata_drive hd, const char* dirPath, const char* fileName, partitio
     read_file_by_cluster(hd, firstFileClust, fileEnt.size, partDesc);
 }
 
+/// @brief creates a file
+/// @param hd 
+/// @param dirPath the path of the dir in which the file needs to be created
+/// @param fileName the name of the file
+/// @param partDesc 
+void create_file(ata_drive hd, char* path, char* fileName, partition_descr *partDesc) {
+    uint32_t dirCluster = find_dir_first_cluster(hd, path, partDesc);
 
-void write_to_file(ata_drive hd, const char* dirPath,const char *fileName, const char *data, uint32_t size, partition_descr partDesc) {
+    //directory not found
+    if(dirCluster == 0xFFFFFFFF) {
+        terminal_write_string("invalid path");
+        return;
+    }
+
+    //file already exists
+    if(is_file_in_dir(hd, dirCluster, fileName, partDesc)) {
+        terminal_write_string("flie exists");
+        return;
+    }
+
+    create_file_by_dir_cluster(hd, dirCluster, fileName, partDesc);
+}
+
+/// @brief deletes a certain file
+/// @param hd 
+/// @param dirPath the path of the dir the file is loacted in
+/// @param fileName the name of the file
+/// @param partDesc 
+void delete_file(ata_drive hd, char* dirPath, char* fileName, partition_descr *partDesc) {
+    uint32_t dirCluster = find_dir_first_cluster(hd, dirPath, partDesc);
+    if(dirCluster == 0xFFFFFFFF) { //invalid path
+        terminal_write_string("invalid path");
+        return;
+    }
+    if(!is_file_in_dir(hd, dirCluster, fileName, partDesc)) { // file not found
+        terminal_write_string("file not found");
+        return;
+    } 
+    delete_file_by_dir_cluster(hd, dirCluster, fileName, partDesc);
+}
+
+/// @brief creates a dir
+/// @param hd 
+/// @param path the path of the dir in which the new dir needs to be placed
+/// @param dirName the name of the dir
+/// @param partDesc 
+void create_dir(ata_drive hd, char* path, char* dirName, partition_descr *partDesc) {
+    uint32_t parentCluster = find_dir_first_cluster(hd, path, partDesc);
+    if(parentCluster == 0xFFFFFFFF) { //invalid path
+        terminal_write_string("invalid path");
+        return;
+    }
+    if(is_file_in_dir(hd, parentCluster, dirName, partDesc)) { // dir already exists
+        terminal_write_string("dir already exists");
+        return;
+    }
+
+    create_dir_by_parent_cluster(hd, parentCluster, dirName, partDesc);
+}
+
+/// @brief deletes a certain dir
+/// @param hd 
+/// @param dirPath the path of the parent dir of dir
+/// @param dirName the name of the dir
+/// @param partDesc 
+void delete_dir(ata_drive hd, char* dirPath, char* dirName, partition_descr *partDesc) {
+    uint32_t parentDirCluster = find_dir_first_cluster(hd, dirPath, partDesc);
+    if(parentDirCluster == 0xFFFFFFFF) { //invalid path
+        terminal_write_string("invalid path");
+        return;
+    }
+    if(!is_file_in_dir(hd, parentDirCluster, dirName, partDesc)) { // file not found
+        terminal_write_string("dir not found");
+        return;
+    } 
+    delete_dir_by_parent_cluster(hd, parentDirCluster, dirName, partDesc);
+}
+
+/// @brief writes to a specified file
+/// @param hd 
+/// @param dirPath the path of the dir the file is loacted in
+/// @param fileName the name of the file
+/// @param data what to write
+/// @param size the size of the data to write
+/// @param partDesc 
+void write_to_file(ata_drive hd, const char* dirPath,const char *fileName, const char *data, uint32_t size, partition_descr *partDesc) {
     uint32_t dirsCluster = find_dir_first_cluster(hd, dirPath, partDesc);
     if(dirsCluster == 0xFFFFFFFF) { //invalid path
-        terminal_write_string("inalid path");
+        terminal_write_string("invalid path");
         return;
     }
     if(!is_file_in_dir(hd, dirsCluster, fileName, partDesc)) { // file not found
@@ -671,6 +1283,10 @@ void write_to_file(ata_drive hd, const char* dirPath,const char *fileName, const
 
     write_to_file_by_dir_cluster(hd, dirsCluster, fileName, partDesc, data, size);
 }
-void tree(ata_drive hd, partition_descr partDesc) {
-    read_dir_by_cluster(hd, partDesc.bpb.rootCluster, partDesc); 
+
+/// @brief writes the contents of the whole file system
+/// @param hd 
+/// @param partDesc 
+void tree(ata_drive hd, partition_descr *partDesc) {
+    read_dir_by_cluster(hd, partDesc->bpb.rootCluster, partDesc); 
 }

@@ -44,6 +44,13 @@ char *strchr(const char *str, char c) {
     return NULL;
 }
 
+
+char toupper(char c) {
+    if((c >= 'a') && (c <= 'z'))
+        return (c - ('a' - 'A'));
+    return c;
+}
+
 /// @brief splits string by specifed delimeter
 /// @param str
 /// @param delim 

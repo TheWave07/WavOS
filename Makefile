@@ -1,5 +1,5 @@
 CC:=i686-elf-gcc
-CFLAGS:=-c -std=gnu99 -ffreestanding -Wall -Wextra -Iinclude
+CFLAGS:=-fno-merge-constants -c -std=gnu99 -O0 -ffreestanding -Wall -Wextra -Iinclude
 LD:=i686-elf-ld
 LDFLAGS:=-T linker.ld -o kernel.bin
 ASM:=nasm
