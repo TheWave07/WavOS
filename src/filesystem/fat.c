@@ -31,6 +31,26 @@ void utf8_to_utf16(const char *utf8, uint16_t *utf16) {
     }
 }
 
+/// @brief reads long filenam 
+/// @param lfn_entries lfn entries array
+/// @param count count of entries
+/// @param output where to put the lfn
+void read_long_filename(LFN_entry_fat32 *lfn_entries, int count, char *output) {
+    int pos = 0;
+
+    // Process LFN entries in reverse order
+    for (int i = count - 1; i >= 0; i--) {
+        utf16_to_utf8((uint16_t*)lfn_entries[i].chars1, &output[pos], 5);
+        pos += 5;
+        utf16_to_utf8((uint16_t*)lfn_entries[i].chars2, &output[pos], 6);
+        pos += 6;
+        utf16_to_utf8((uint16_t*)lfn_entries[i].chars3, &output[pos], 2);
+        pos += 2;
+    }
+
+    output[pos] = '\0'; 
+}
+
 /// @brief returns the val of the specified entry in FAT
 /// @param hd
 /// @param ent_idx 
@@ -219,7 +239,7 @@ bool allocate_new_clusters(ata_drive hd, partition_descr *partDesc, uint32_t sta
     
     uint32_t lastCluster = get_last_cluster_in_chain(hd, startCluster, partDesc);
     //checks if there are enough free clusters 
-    if (partDesc->FSInfo.freeClusterCount < clustersNeeded)
+    if (((int32_t) partDesc->FSInfo.freeClusterCount) < clustersNeeded)
         return false;
     
     uint32_t* clustersIdx = find_free_clusters(hd, partDesc, clustersNeeded);
@@ -264,7 +284,7 @@ void remove_clusters_from_chain(ata_drive hd, partition_descr *partDesc, uint32_
     
 
     // creates cluster chain in fat
-    for (int32_t i = chainSize + clustersToRemove; i < chainSize; i++)
+    for (int32_t i = chainSize + clustersToRemove; i < (int32_t) chainSize; i++)
     {
         write_fat_entry(hd, clustersIdx[i], partDesc, 0);
     }
@@ -278,7 +298,7 @@ void remove_clusters_from_chain(ata_drive hd, partition_descr *partDesc, uint32_
     free(clustersIdx);
 }
 
-static bool inline is_valid_sfn_char(char c) {
+inline static bool is_valid_sfn_char(char c) {
     return (strchr(SFN_ALLOWED, c) != NULL);
 }
 
@@ -340,7 +360,7 @@ void create_file_by_dir_cluster(ata_drive hd, uint32_t dirCluster, char* fileNam
     LFN_entry_fat32* lfns = (LFN_entry_fat32*) malloc(lfnCount * sizeof(LFN_entry_fat32));
 
     for (int i = 0; i < lfnCount; i++) {
-        memset((char*)(lfns+i), 0xFF, sizeof(LFN_entry_fat32)); // Fill unused bytes
+        memset((uint8_t*)(lfns+i), 0xFF, sizeof(LFN_entry_fat32)); // Fill unused bytes
 
         lfns[i].order = (i + 1) | (i == lfnCount - 1 ? 0x40 : 0x00);
         lfns[i].attributes = 0x0F;
@@ -547,7 +567,7 @@ void create_dir_by_parent_cluster(ata_drive hd, uint32_t parentCluster, char* di
     LFN_entry_fat32* lfns = (LFN_entry_fat32*) malloc(lfnCount * sizeof(LFN_entry_fat32));
 
     for (int i = 0; i < lfnCount; i++) {
-        memset((char*)(lfns+i), 0xFF, sizeof(LFN_entry_fat32)); // Fill unused bytes
+        memset((uint8_t*)(lfns+i), 0xFF, sizeof(LFN_entry_fat32)); // Fill unused bytes
 
         lfns[i].order = (i + 1) | (i == lfnCount - 1 ? 0x40 : 0x00);
         lfns[i].attributes = 0x0F;
@@ -642,7 +662,6 @@ void clear_dir_by_cluster (ata_drive hd, uint32_t dirCluster, partition_descr *p
         do {
             read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
             for (int i = 0; i < 16; i++) {
-                char nameBuff[256] = {0};
                 if(dirent[i].name[0] == 0x00) { // end of dir entries
                     moreEnt = 0;
                     break;
@@ -867,25 +886,6 @@ void write_to_file_by_dir_cluster(ata_drive hd, uint32_t dirFirstClust, const ch
     }
 }
 
-/// @brief reads long filenam 
-/// @param lfn_entries lfn entries array
-/// @param count count of entries
-/// @param output where to put the lfn
-void read_long_filename(LFN_entry_fat32 *lfn_entries, int count, char *output) {
-    int pos = 0;
-
-    // Process LFN entries in reverse order
-    for (int i = count - 1; i >= 0; i--) {
-        utf16_to_utf8((uint16_t*)lfn_entries[i].chars1, &output[pos], 5);
-        pos += 5;
-        utf16_to_utf8((uint16_t*)lfn_entries[i].chars2, &output[pos], 6);
-        pos += 6;
-        utf16_to_utf8((uint16_t*)lfn_entries[i].chars3, &output[pos], 2);
-        pos += 2;
-    }
-
-    output[pos] = '\0'; 
-}
 
 /// @brief reads a dir and prints its contents
 /// @param hd
@@ -921,10 +921,10 @@ void read_dir_by_cluster(ata_drive hd, uint32_t firstCluster, partition_descr *p
                     terminal_write_string(nameBuff);
                     lfnIdx = 0;
                 } else {
-                    terminal_write(dirent[i].name, 8);
+                    terminal_write((char*) dirent[i].name, 8);
                     if((dirent[i].attributes & 0x10) != 0x10) {
                         terminal_write_string(".");
-                        terminal_write(dirent[i].ext, 3);
+                        terminal_write((char*) dirent[i].ext, 3);
                     }
                 }
                 terminal_write_string("\n");

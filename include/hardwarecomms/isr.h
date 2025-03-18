@@ -19,6 +19,6 @@
 
 
 
-void register_isr_callback(int irq,void (*callback)());
+void register_irq_callback(int irq,void (*callback)());
 
 #endif

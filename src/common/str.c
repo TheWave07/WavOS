@@ -35,7 +35,7 @@ int strcmp(const char* str1, const char* str2) {
 /// @param str 
 /// @param c 
 /// @return a pointer to the first occurence
-char *strchr(const char *str, char c) {
+const char *strchr(const char *str, char c) {
     for (; *str; str++) {
         if(*(str) == c)
             return str;

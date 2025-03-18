@@ -10,6 +10,12 @@
 #include <filesystem/msdospart.h>
 #include <filesystem/fat.h>
 #include <multitasking.h>
+
+void sysprints(char* str)
+{
+    asm("int $0x80" : : "a" (4), "b" (str));
+}
+
 void taskA()
 {
     terminal_write_string("A");
@@ -98,12 +104,16 @@ int kmain(void *mbd, unsigned int magic){
     terminal_write_string("IDT Set.\n");
     interrupts_activate();
 
-    terminal_write_string("\nATA primary slave: ");
+    sysprints("\nATA primary slave: ");
     ata_drive ataSlave = create_ata(false, 0x1F0);
     identify(ataSlave);
     
-    partition_descr *part_descriptors = read_partitions(ataSlave);
 
+    sysprints("a");
+    
+    //partition_descr *part_descriptors = read_partitions(ataSlave);
+
+    
     /*char lotsOWords[7002];
     memset(lotsOWords, 'B', 7000);
     lotsOWords[7000] = 'C';

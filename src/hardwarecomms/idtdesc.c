@@ -303,8 +303,8 @@ void irq_setup(){
 	outb(0xA1, 0x01);
 	outb(0x21, 0x00);
 	outb(0xA1, 0x00);
-	register_isr_callback(IRQ0, &schedule);
-	register_isr_callback(IRQ1,&keyboard_input);
+	register_irq_callback(IRQ0, &schedule);
+	register_irq_callback(IRQ1,&keyboard_input);
 }
 
 

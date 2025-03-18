@@ -123,7 +123,7 @@ void print_entry(pci_entry_desc_t entry)
 
 bar_t get_base_address_register(uint8_t bus, uint8_t device, uint8_t func, size_t bar)
 {
-    bar_t res;
+    bar_t res = {0};
 
     uint32_t headerType = pci_read(bus, device, func, 0x0E) & 0x07F;
     size_t maxBARs = 6 - (4*headerType);

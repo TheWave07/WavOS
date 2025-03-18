@@ -12,6 +12,7 @@
         "fat.h": "c",
         "tools.h": "c",
         "str.h": "c",
-        "msdospart.h": "c"
+        "msdospart.h": "c",
+        "keyboard.h": "c"
     }
 }
