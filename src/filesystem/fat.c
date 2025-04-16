@@ -110,6 +110,8 @@ partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset) {
 
     partDesc.fatDesc.data_start = partDesc.fatDesc.fat_start + partDesc.fatDesc.fat_size * partDesc.bpb.fatCopies;
 
+    partDesc.currentWorkingDir = partDesc.bpb.rootCluster;
+
     return partDesc;
 }
 
@@ -1095,8 +1097,14 @@ void read_file_by_cluster(ata_drive hd, uint32_t firstCluster, uint32_t size, pa
 /// @param partDesc 
 /// @return the first cluster index of the entry
 uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr *partDesc) {
-    uint32_t currentDirCluster = partDesc->bpb.rootCluster;
-    //terminal_write_string(path);
+    uint32_t currentDirCluster;
+
+    //checks if path starts from root or CWD
+    if(path[0] == '/')
+        currentDirCluster = partDesc->bpb.rootCluster;
+    else
+        currentDirCluster = partDesc->currentWorkingDir;
+    
     directory_entry_fat32 dirent[16];
     LFN_entry_fat32 lfnEnt[20];
     int lfnIdx = 0;
@@ -1106,10 +1114,23 @@ uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr 
         bool moreEnt = 1;
         bool found = 0;
         while (moreEnt && (nextDirCluster < 0x0FFFFFF8) && !found) {
+
             int dirSectorOffset = 0;
             uint32_t dirSector = partDesc->fatDesc.data_start + partDesc->bpb.sectorPerCluster * (nextDirCluster - 2);
             do {
                 read28(hd, dirSector + dirSectorOffset, (uint8_t*)&dirent[0], 16*sizeof(directory_entry_fat32));
+                if (strcmp(nextDirName, ".") == 0) { // Checks if . is used
+                    found = 1;
+                    continue;
+                } else if (strcmp(nextDirName, "..") == 0) { // Checks if .. is used
+                    if (currentDirCluster != partDesc->bpb.rootCluster) {
+                        uint32_t EntCluster = ((uint32_t)dirent[1].firstClusterHi) << 16
+                        | ((uint32_t)dirent[1].firstClusterLo);
+                        currentDirCluster = EntCluster;
+                    }
+                    found = 1;
+                    continue;
+                }
                 for (int i = 0; i < 16; i++) {
                     if(dirent[i].name[0] == 0x00) { // end of dir entries
                         moreEnt = 0;
@@ -1132,6 +1153,12 @@ uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr 
                             continue;
 
                     } else {
+                            /*if(strcmp(nextDirName, ".") && strcmp(nextDirName, ".."))
+                                continue;
+                            else if(strcmp(nextDirName, "..") && i != 0)
+                                continue;
+                            else if(strcmp(nextDirName, ".") && i != 1)
+                                continue;*/
                             continue;
                     }
                     
@@ -1153,6 +1180,20 @@ uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr 
     }
     
     return currentDirCluster;
+}
+
+/// @brief changes the current working directory
+/// @param hd 
+/// @param path the path of the new wd
+/// @param partDesc 
+void change_current_working_dir(ata_drive hd, const char* path, partition_descr *partDesc) {
+    uint32_t dirCluster = find_dir_first_cluster(hd, path, partDesc);
+    if(dirCluster == 0xFFFFFFFF) { //invalid path
+        terminal_write_string("No such Directory");
+        return;
+    }
+
+    partDesc->currentWorkingDir = dirCluster;
 }
 
 /// @brief reads the dir specified in path
@@ -1288,5 +1329,5 @@ void write_to_file(ata_drive hd, const char* dirPath,const char *fileName, const
 /// @param hd 
 /// @param partDesc 
 void tree(ata_drive hd, partition_descr *partDesc) {
-    read_dir_by_cluster(hd, partDesc->bpb.rootCluster, partDesc); 
+    read_dir_by_cluster(hd, partDesc->currentWorkingDir, partDesc); 
 }

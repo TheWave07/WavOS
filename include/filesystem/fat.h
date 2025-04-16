@@ -87,9 +87,12 @@ typedef struct {
     FSInfo_block FSInfo;
 
     fat_descriptor fatDesc;
+
+    uint32_t currentWorkingDir;
 } partition_descr;
 
 partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset);
+void change_current_working_dir(ata_drive hd, const char* path, partition_descr *partDesc);
 void read_dir(ata_drive hd, const char* path, partition_descr *partDesc);
 void tree(ata_drive hd, partition_descr *partDesc);
 void create_file(ata_drive hd, char* path, char* fileName, partition_descr *partDesc);
