@@ -13,6 +13,9 @@
         "tools.h": "c",
         "str.h": "c",
         "msdospart.h": "c",
-        "keyboard.h": "c"
+        "keyboard.h": "c",
+        "filedescriptor.h": "c",
+        "idtdesc.h": "c",
+        "output.h": "c"
     }
 }

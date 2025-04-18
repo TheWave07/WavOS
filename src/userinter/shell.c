@@ -1,4 +1,5 @@
 #include <userinter/shell.h>
+#include <userinter/output.h>
 #include <io/screen.h>
 #include <drivers/keyboard.h>
 #include <filesystem/fat.h>
@@ -7,18 +8,36 @@
 #define INPUTBUFFERSIZE 512
 
 void output_write(char* line) {
-    terminal_write_string(line);
+    print_string(line);
 }
 
 void output_write_line(char* line) {
-    terminal_write_string(line);
-    terminal_write_string("\n");
+    print_string(line);
+    print_string("\n");
 }
 
 /// @brief outputs the prompt
 void output_prompt() {
     output_write_line("");
     output_write("> ");
+}
+
+/// @brief splits fileName from path
+/// @param path the path with the fileName
+/// @return the fileName also removes it from path string
+char* split_path(char* path) {
+    // Checks if path is only fileName
+    if(!strchr(path, '/')) {
+        return path;
+    }
+    char* last = path + strlen(path);
+
+    // Find the start of this token
+    while (last > path && !strchr("/", *(last - 1))) {
+        last--;
+    }
+    *(last - 1) = '\0';
+    return last;
 }
 
 /// @brief gets input form user
@@ -60,14 +79,12 @@ char **split_line(char* line) {
         tokens[position++] = token;
 
         if (position >= TOKENBUFFSIZE) {
-            free(line);
             return tokens;
         }
         
         token = strtok(NULL, " ");
     }
     tokens[position] = NULL;
-    free(line);
     return tokens;
 }
 
@@ -100,13 +117,20 @@ void cmd_cd(int argc, char** argv) {
 /// @param argv 
 void cmd_mkdir(int argc, char** argv) {
     if (argc < 2) {
-        output_write_line("Usage: mkdir <directory path> <directory name>");
+        output_write_line("Usage: mkdir <directory path>");
         return;
     }
-    if(argc == 2)
+
+    char* fileName = split_path(argv[1]);
+    if(strcmp(fileName, argv[1])) {
+        if(*(argv[1])) { // if first char was /
+            create_dir(hd, argv[1], fileName, partDesc);
+        } else {
+            create_dir(hd, "/", fileName, partDesc);
+        }
+    } else {
         create_dir(hd, "", argv[1], partDesc);
-    else
-        create_dir(hd, argv[1], argv[2], partDesc);
+    }
 }
 
 /// @brief removes a directory and all its contents
@@ -114,13 +138,19 @@ void cmd_mkdir(int argc, char** argv) {
 /// @param argv 
 void cmd_rmdir(int argc, char** argv) {
     if (argc < 2) {
-        output_write_line("Usage: rmdir <directory path> <directory name>");
+        output_write_line("Usage: rmdir <directory path>");
         return;
     }
-    if(argc == 2)
+    char* dirName = split_path(argv[1]);
+    if(strcmp(dirName, argv[1])) {
+        if(*(argv[1])) { // if first char was /
+            delete_dir(hd, argv[1], dirName, partDesc);
+        } else {
+            delete_dir(hd, "/", dirName, partDesc);
+        }
+    } else {
         delete_dir(hd, "", argv[1], partDesc);
-    else
-        delete_dir(hd, argv[1], argv[2], partDesc);
+    }
 }
 
 /// @brief removes a file
@@ -128,14 +158,20 @@ void cmd_rmdir(int argc, char** argv) {
 /// @param argv 
 void cmd_rm(int argc, char** argv) {
     if (argc < 2) {
-        output_write_line("Usage: rm <file path> <file name>");
+        output_write_line("Usage: rm <file path>");
         return;
     }
 
-    if(argc == 2)
+    char* fileName = split_path(argv[1]);
+    if(strcmp(fileName, argv[1])) {
+        if(*(argv[1])) { // if first char was /
+            delete_file(hd, argv[1], fileName, partDesc);
+        } else {
+            delete_file(hd, "/", fileName, partDesc);
+        }
+    } else {
         delete_file(hd, "", argv[1], partDesc);
-    else
-        delete_file(hd, argv[1], argv[2], partDesc);
+    }
 }
 
 
@@ -155,13 +191,20 @@ void cmd_echo(int argc, char** argv) {
 /// @param argv 
 void cmd_cat(int argc, char** argv) {
     if (argc < 2) {
-        output_write("Usage: cat <file path> <file name>\n");
+        output_write_line("Usage: cat <file path>");
         return;
     }
-    if(argc == 2)
+
+    char* fileName = split_path(argv[1]);
+    if(strcmp(fileName, argv[1])) {
+        if(*(argv[1])) { // if first char was /
+            read_file(hd, argv[1], fileName, partDesc);
+        } else {
+            read_file(hd, "/", fileName, partDesc);
+        }
+    } else {
         read_file(hd, "", argv[1], partDesc);
-    else
-        read_file(hd, argv[1], argv[2], partDesc);
+    }
 }
 
 /// @brief creates a new file
@@ -169,13 +212,19 @@ void cmd_cat(int argc, char** argv) {
 /// @param argv 
 void cmd_touch(int argc, char** argv) {
     if (argc < 2) {
-        output_write("Usage: touch <file path> <file name>\n");
+        output_write_line("Usage: touch <file path>");
         return;
     }
-    if(argc == 2)
+    char* fileName = split_path(argv[1]);
+    if(strcmp(fileName, argv[1])) {
+        if(*(argv[1])) { // if first char was /
+            create_file(hd, argv[1], fileName, partDesc);
+        } else {
+            create_file(hd, "/", fileName, partDesc);
+        }
+    } else {
         create_file(hd, "", argv[1], partDesc);
-    else
-        create_file(hd, argv[1], argv[2], partDesc);
+    }
 }
 
 /// @brief clears screen
@@ -191,7 +240,8 @@ void start_shell(ata_drive hardDrive, partition_descr *partDescriptor) {
     terminal_init();
     while(1) {
         output_prompt();
-        char** args = split_line(get_input_line());
+        char* input = get_input_line();
+        char** args = split_line(input);
 
         //calcs argc
         char** temp = args;
@@ -201,10 +251,12 @@ void start_shell(ata_drive hardDrive, partition_descr *partDescriptor) {
         }
 
         if (!argc) {
+            free(input);
             free(args);
-            return;
+            continue;
         }
-        // finds whcih command to exec and execs it
+        
+        // finds which command to exec and execs it
         if (strcmp(args[0], "ls") == 0) {
             cmd_ls(argc, args);
         } else if (strcmp(args[0], "cd") == 0) {
@@ -230,6 +282,7 @@ void start_shell(ata_drive hardDrive, partition_descr *partDescriptor) {
             output_write_line(args[0]);
         }
 
+        free(input);
         free(args);
     }
 }

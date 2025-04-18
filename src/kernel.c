@@ -1,4 +1,5 @@
 #include <io/screen.h>
+#include <common/str.h>
 #include <common/tools.h>
 #include <gdtdesc.h>
 #include <hardwarecomms/idtdesc.h>
@@ -8,14 +9,12 @@
 #include <memorymanagement.h>
 #include <drivers/ata.h>
 #include <userinter/shell.h>
+#include <userinter/output.h>
+#include <stdout.h>
 #include <filesystem/msdospart.h>
 #include <filesystem/fat.h>
 #include <multitasking.h>
 
-void sysprints(char* str)
-{
-    asm("int $0x80" : : "a" (4), "b" (str));
-}
 
 void taskA()
 {
@@ -98,14 +97,12 @@ int kmain(void *mbd, unsigned int magic){
     terminal_write_string("IDT Set.\n");
     interrupts_activate();
 
-    sysprints("\nATA primary slave: ");
+    terminal_write_string("\nATA primary slave: ");
     ata_drive ataSlave = create_ata(false, 0x1F0);
     identify(ataSlave);
     
 
-    sysprints("a");
     partition_descr *part_descriptors = read_partitions(ataSlave);
-
     start_shell(ataSlave, part_descriptors);
     
 
@@ -122,8 +119,9 @@ int kmain(void *mbd, unsigned int magic){
     //read_file(ataSlave, "dir1/dir2/dir3", "file1.txt", part_descriptors);
     //delete_file(ataSlave, "dir1/dir2/dir3" , "file1.txt", part_descriptors);
     
-    tree(ataSlave, part_descriptors);
-    //write_to_file(ataSlave, "file3", "txt", part_descriptors, lotsOWords, 7002);
+    //tree(ataSlave, part_descriptors);
+    //write_to_file(ataSlave, "", "file1.txt", "this is file1 part1", 20, false, part_descriptors);
+    //read_file(ataSlave, "", "file1.txt", part_descriptors);
     while(1) {
         key_packet p = kb_fetch();
         if(p.printable)

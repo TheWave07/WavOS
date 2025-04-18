@@ -100,5 +100,7 @@ void delete_file(ata_drive hd, char* dirPath, char* fileName, partition_descr *p
 void create_dir(ata_drive hd, char* path, char* dirName, partition_descr *partDesc);
 void delete_dir(ata_drive hd, char* dirPath, char* dirName, partition_descr *partDesc);
 void read_file(ata_drive hd, const char* dirPath, const char* fileName, partition_descr *partDesc);
-void write_to_file(ata_drive hd, const char* dirPath,const char *fileName, const char *data, uint32_t size, partition_descr *partDesc);
+void write_to_file(ata_drive hd, const char* dirPath, const char *fileName, const char *data, uint32_t size, bool append, partition_descr *partDesc);
+bool is_file_exist(ata_drive hd, const char* dirPath, const char *fileName, partition_descr *partDesc);
+bool is_dir_exist(ata_drive hd, const char* dirPath, partition_descr *partDesc);
 #endif

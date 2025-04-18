@@ -1,5 +1,6 @@
 #include <common/str.h>
 #include <memorymanagement.h>
+#include <io/screen.h>
 int strlen(const char* str) {
     int len = 0;
     while(*str != '\0') {
@@ -57,20 +58,21 @@ char toupper(char c) {
 /// @return the next part of the string that was split
 char* strtok(char *str, const char *delim) {
     static char *next = NULL;
-
+    
     // init on first call
     if(str)
         next = str;
-    
+   
     // return null when there are no more tokens
     if(!next)
         return NULL;
-
+    
     while (*next && strchr(delim, *next)) 
         next++;
 
-    if(*next == '\0')
+    if(*next == '\0') {
         return NULL;
+    }
     
     char *start = next;
     
