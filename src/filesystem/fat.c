@@ -97,13 +97,6 @@ partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset) {
     partition_descr partDesc;
     read28(hd, partitionOffset, (uint8_t*)&partDesc.bpb, sizeof(bios_parameter_block32));
     read28(hd, partitionOffset + partDesc.bpb.fatInfo, (uint8_t*)&partDesc.FSInfo, sizeof(FSInfo_block));
-    print_string("sectors per cluster: ");
-    print_int(partDesc.bpb.sectorPerCluster, 16);
-    print_string("\n");
-
-    print_string("Free Clusters: ");
-    print_int(partDesc.FSInfo.freeClusterCount, 16);
-    print_string("\n");
 
     partDesc.fatDesc.fat_start = partitionOffset + partDesc.bpb.reservedSectors;
     partDesc.fatDesc.fat_size = partDesc.bpb.tableSize;

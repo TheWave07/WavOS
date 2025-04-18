@@ -70,9 +70,7 @@ void identify(ata_drive drive)
         char *text = "  \0";
         text[0] = (data >> 8) & 0xFF;
         text[1] = data & 0xFF;
-        terminal_write_string(text);
     }
-    terminal_write_string("\n");
 }
 
 /// @brief reads from a specified sector in the drive

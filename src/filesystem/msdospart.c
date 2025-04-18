@@ -25,7 +25,6 @@ partition_descr* read_partitions(ata_drive drive) {
         }
         descriptors[i] = read_BPB(drive, mbr.primaryPartition[i].start_lba);
     }
-    terminal_write_string("\n");
 
     return descriptors;
 }

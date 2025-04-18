@@ -257,9 +257,8 @@ void cmd_clear() {
 void start_shell(ata_drive hardDrive, partition_descr *partDescriptor) {
     hd = hardDrive;
     partDesc = partDescriptor;
-    terminal_init();
     bool cont = true;
-
+    output_write_line("");
     output_write_line ("         _______         _______ _______ ");
     output_write_line ("|\\     /(  ___  )\\     /(  ___  |  ____ \\");
     output_write_line ("| )   ( | (   ) | )   ( | (   ) | (    \\/");
