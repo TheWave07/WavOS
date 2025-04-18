@@ -24,11 +24,6 @@ void irq_handler(registers_t regs)
 	if (irq_callbacks[regs.int_no-IRQ0]!=0){
 		(*irq_callbacks[regs.int_no-IRQ0])();
 	}
-	else{
-		/*terminal_write_string("Recieved IRQ: ");
-		terminal_write_int(regs.int_no,16);
-		terminal_write_string("\n");*/
-	}
 }
 
 void register_irq_callback(int irq,void (*callback)()){
