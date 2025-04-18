@@ -89,6 +89,8 @@ typedef struct {
     fat_descriptor fatDesc;
 
     uint32_t currentWorkingDir;
+
+    char CWDString[512];
 } partition_descr;
 
 partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset);

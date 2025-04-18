@@ -8,5 +8,5 @@ int strcmp(const char *str1, const char *str2);
 const char* strchr(const char *str, char c);
 char toupper(char c);
 char* strtok(char *str, const char *delim);
-char* concat(char* str1, char* str2);
+char* concat(const char *str1, const char *str2);
 #endif

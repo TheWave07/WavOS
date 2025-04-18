@@ -6,6 +6,10 @@
 #include <common/str.h>
 #include <memorymanagement.h>
 #define INPUTBUFFERSIZE 512
+#define TOKENBUFFSIZE 64
+
+ata_drive hd;
+partition_descr *partDesc;
 
 void output_write(char* line) {
     print_string(line);
@@ -19,6 +23,8 @@ void output_write_line(char* line) {
 /// @brief outputs the prompt
 void output_prompt() {
     output_write_line("");
+    output_write("WavOS:");
+    output_write(partDesc->CWDString);
     output_write("> ");
 }
 
@@ -67,7 +73,7 @@ char* get_input_line() {
     }
 }
 
-#define TOKENBUFFSIZE 64
+
 char **split_line(char* line) {
     int position = 0;
     char** tokens = (char**) malloc(TOKENBUFFSIZE * sizeof(char*));
@@ -88,8 +94,20 @@ char **split_line(char* line) {
     return tokens;
 }
 
-ata_drive hd;
-partition_descr *partDesc;
+/// @brief displays all shell commands and a description of them
+void cmd_help() {
+    output_write_line("Available commands:");
+    output_write_line("  help         - Show this help message");
+    output_write_line("  ls           - List directory contents");
+    output_write_line("  cd <path>    - Change current directory");
+    output_write_line("  mkdir <name> - Create a new directory");
+    output_write_line("  rmdir <dir>  - Delete a directory");
+    output_write_line("  touch <file> - Create an empty file");
+    output_write_line("  cat <file>   - Show contents of a file");
+    output_write_line("  echo <text>  - Print text");
+    output_write_line("  rm <file>    - Delete a file");
+    
+}
 
 /// @brief writes the contents of the dir
 /// @param argc count of args
@@ -97,7 +115,10 @@ partition_descr *partDesc;
 /// @param hd 
 /// @param partDesc 
 void cmd_ls(int argc, char** argv) {
-    tree(hd, partDesc);
+    if (argc == 1)
+        read_dir(hd, "", partDesc);
+    else
+        read_dir(hd, argv[1], partDesc);
 }
 
 /// @brief changes the current working directory
@@ -227,10 +248,9 @@ void cmd_touch(int argc, char** argv) {
     }
 }
 
+
 /// @brief clears screen
-/// @param argc 
-/// @param argv 
-void cmd_clear(int argc, char** argv) {
+void cmd_clear() {
     terminal_init();
 }
 
@@ -238,7 +258,19 @@ void start_shell(ata_drive hardDrive, partition_descr *partDescriptor) {
     hd = hardDrive;
     partDesc = partDescriptor;
     terminal_init();
-    while(1) {
+    bool cont = true;
+
+    output_write_line ("         _______         _______ _______ ");
+    output_write_line ("|\\     /(  ___  )\\     /(  ___  |  ____ \\");
+    output_write_line ("| )   ( | (   ) | )   ( | (   ) | (    \\/");
+    output_write_line ("| | _ | | (___) | |   | | |   | | (_____ ");
+    output_write_line ("| |( )| |  ___  ( (   ) ) |   | (_____  )");
+    output_write_line ("| || || | (   ) |\\ \\_/ /| |   | |     ) |");
+    output_write_line ("| () () | )   ( | \\   / | (___) /\\____) |");
+    output_write_line ("(_______)/     \\|  \\_/  (_______)_______)");
+    output_write_line ("Versio: 1.0");
+    
+    while(cont) {
         output_prompt();
         char* input = get_input_line();
         char** args = split_line(input);
@@ -255,9 +287,42 @@ void start_shell(ata_drive hardDrive, partition_descr *partDescriptor) {
             free(args);
             continue;
         }
-        
+
+        // Checks for shell redirection
+        for (int i = 1; i < (argc - 1); i++) {
+            if (strcmp(args[i], ">") == 0) { // if redirection
+                char* fileName = split_path(args[i + 1]);
+                if (strcmp(fileName, args[i + 1])) {
+                    if(*(args[i + 1])) { // if first char was /
+                        change_stdout_to_file(args[i + 1], fileName, partDesc, hd, true);
+                    } else {
+                        change_stdout_to_file("/", fileName, partDesc, hd, true);
+                    }
+                } else {
+                    change_stdout_to_file("", fileName, partDesc, hd, true);
+                }
+                argc = i;
+                break;
+            } else if ((strcmp(args[i], ">>") == 0)) {
+                char* fileName = split_path(args[i + 1]);
+                if (strcmp(fileName, args[i + 1])) {
+                    if(*(args[i + 1])) { // if first char was /
+                        change_stdout_to_file(args[i + 1], fileName, partDesc, hd, false);
+                    } else {
+                        change_stdout_to_file("/", fileName, partDesc, hd, false);
+                    }
+                } else {
+                    change_stdout_to_file("", fileName, partDesc, hd, false);
+                }
+                argc = i;
+                break;
+            }
+        }
         // finds which command to exec and execs it
-        if (strcmp(args[0], "ls") == 0) {
+        if (strcmp(args[0], "help") == 0) {
+            cmd_help();
+        }
+        else if (strcmp(args[0], "ls") == 0) {
             cmd_ls(argc, args);
         } else if (strcmp(args[0], "cd") == 0) {
             cmd_cd(argc, args);
@@ -276,12 +341,13 @@ void start_shell(ata_drive hardDrive, partition_descr *partDescriptor) {
         } else if (strcmp(args[0], "touch") == 0) {
             cmd_touch(argc, args);
         } else if (strcmp(args[0], "clear") == 0) {
-            cmd_clear(argc, args);
+            cmd_clear();
         } else {
             output_write("Unknown command: ");
             output_write_line(args[0]);
         }
 
+        change_stdout_to_screen();
         free(input);
         free(args);
     }

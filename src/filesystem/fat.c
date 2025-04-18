@@ -111,6 +111,7 @@ partition_descr read_BPB(ata_drive hd, uint32_t partitionOffset) {
     partDesc.fatDesc.data_start = partDesc.fatDesc.fat_start + partDesc.fatDesc.fat_size * partDesc.bpb.fatCopies;
 
     partDesc.currentWorkingDir = partDesc.bpb.rootCluster;
+    partDesc.CWDString[0] = '/';
 
     return partDesc;
 }
@@ -1054,28 +1055,31 @@ void read_dir_by_cluster(ata_drive hd, uint32_t firstCluster, partition_descr *p
                     char nameBuff[256] = {0};
                     read_long_filename(lfnEnt, lfnIdx, nameBuff);
                     print_string(nameBuff);
+                    if((dirent[i].attributes & 0x10) == 0x10) {
+                        print_string("/    ");
+                        print_string("<DIR>");
+                    } else {
+                        print_string("    ");
+                        print_int(dirent[i].size, 10);
+                        print_string(" bytes");
+                    }
                     lfnIdx = 0;
                 } else {
+                    if(dirent[i].name[0] == '.')
+                        continue;
                     print((char*) dirent[i].name, 8);
                     if((dirent[i].attributes & 0x10) != 0x10) {
                         print_string(".");
                         print((char*) dirent[i].ext, 3);
+                        print_string("    ");
+                        print_int(dirent[i].size, 10);
+                        print_string(" bytes");
+                    } else {
+                        print_string("/    ");
+                        print_string("<DIR>");
                     }
                 }
                 print_string("\n");
-
-                uint32_t firstEntCluster = ((uint32_t)dirent[i].firstClusterHi) << 16
-                                          | ((uint32_t)dirent[i].firstClusterLo);
-                // if dir, recursivly read its contents
-                if((dirent[i].attributes & 0x10) == 0x10) {
-                    if (dirent[i].name[0] == '.')
-                        continue;
-                    read_dir_by_cluster(hd, firstEntCluster, partDesc);
-                    continue;
-                }
-
-                //read file
-                //read_file_by_cluster(hd, firstEntCluster, dirent[i].size, partDesc);
             }
         } while ((++dirSectorOffset <= partDesc->bpb.sectorPerCluster) && moreEnt);
         // gets next cluster belonging to the dir
@@ -1277,11 +1281,14 @@ uint32_t find_dir_first_cluster(ata_drive hd, const char* path, partition_descr 
                         lfnEnt[lfnIdx++] = *((LFN_entry_fat32 *) &dirent[i]);
                         continue;
                     }
-    
+
                     if (lfnIdx > 0) {
                         char nameBuff[256] = {0};
                         read_long_filename(lfnEnt, lfnIdx, nameBuff);
                         lfnIdx = 0;
+
+                        if((dirent[i].attributes & 0x10) != 0x10)
+                            continue;
 
                         if(strcmp(nextDirName, nameBuff))
                             continue;
@@ -1324,6 +1331,44 @@ void change_current_working_dir(ata_drive hd, const char* path, partition_descr 
     }
 
     partDesc->currentWorkingDir = dirCluster;
+
+    char combined[512];
+    char* tokens[64];
+    int depth = 0;
+
+    //update simple path
+    if(path[0] == '/') {
+        strcpy(combined, path);
+    } else {
+        char* merged = concat(partDesc->CWDString, "/");
+        strcpy(combined, merged);
+        free(merged);
+        merged = concat(combined, path);
+        strcpy(combined, merged);
+        free(merged);
+    }
+
+    // process path
+    char *token = strtok(combined, "/");
+    while (token != NULL) {
+        if (strcmp(token, "..") == 0) {
+            if (depth > 0) depth--;  // goes back one dir
+        } else if (strcmp(token, ".") != 0 && strcmp(token, "") != 0) {
+            tokens[depth++] = token;  // adds to path
+        }
+        token = strtok(NULL, "/");
+    }
+
+    if (depth == 0) {
+        strcpy(partDesc->CWDString, "/");
+    } else {
+        int len = 0;
+        for (int i = 0; i < depth; i++) {
+            partDesc->CWDString[len++] = '/';
+            strcpy(partDesc->CWDString + len, tokens[i]);
+            len += strlen(tokens[i]);
+        }
+    }
 }
 
 /// @brief reads the dir specified in path
@@ -1495,5 +1540,5 @@ bool is_dir_exist(ata_drive hd, const char* dirPath, partition_descr *partDesc) 
 /// @param hd 
 /// @param partDesc 
 void tree(ata_drive hd, partition_descr *partDesc) {
-    read_dir_by_cluster(hd, partDesc->currentWorkingDir, partDesc); 
+    read_dir(hd, "", partDesc); 
 }

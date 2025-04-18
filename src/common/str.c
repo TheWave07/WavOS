@@ -91,7 +91,7 @@ char* strtok(char *str, const char *delim) {
 /// @param str1 
 /// @param str2 
 /// @return the concat string, uses malloc to alloc mem
-char* concat(char *str1, char *str2) {
+char* concat(const char *str1, const char *str2) {
     char* res = (char*) malloc((strlen(str1) + strlen(str2)) * sizeof(char) + 1);
     int i = 0;
     for(; *str1; i++)

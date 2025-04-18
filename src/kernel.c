@@ -107,27 +107,5 @@ int kmain(void *mbd, unsigned int magic){
     
 
     
-    /*char lotsOWords[7002];
-    memset(lotsOWords, 'B', 7000);
-    lotsOWords[7000] = 'C';
-    lotsOWords[7001] = '\0';*/
-    //write_to_file(ataSlave, "dir1", "file1.txt", "this is file1 part1 dir1", 25, part_descriptors);
-    //read_file(ataSlave, ".", "file1.txt", part_descriptors);
-    //create_dir(ataSlave, "dir1/dir2", "dir3", part_descriptors);
-    //create_file(ataSlave, "dir1/dir2/dir3", "file1.txt", part_descriptors);
-    //write_to_file(ataSlave, "dir1/dir2/dir3", "file1.txt", "this is file1 part1 dir3", 25, part_descriptors);
-    //read_file(ataSlave, "dir1/dir2/dir3", "file1.txt", part_descriptors);
-    //delete_file(ataSlave, "dir1/dir2/dir3" , "file1.txt", part_descriptors);
-    
-    //tree(ataSlave, part_descriptors);
-    //write_to_file(ataSlave, "", "file1.txt", "this is file1 part1", 20, false, part_descriptors);
-    //read_file(ataSlave, "", "file1.txt", part_descriptors);
-    while(1) {
-        key_packet p = kb_fetch();
-        if(p.printable)
-            terminal_write("a", 1);
-        if(p.value == -2)
-            terminal_rem();
-    }
     return 0;
 }
